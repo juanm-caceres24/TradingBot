@@ -33,6 +33,9 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
     def test_load_root_bot_config_with_multiple_assets(self) -> None:
         cfg = load_config(BOT_CONFIG_PATH)
         self.assertEqual(cfg.storage.db_path, "data/market.db")
+        self.assertEqual(cfg.export.output_dir, "data/exports")
+        self.assertEqual(cfg.export.dataset_path_prefix, "data")
+        self.assertEqual(cfg.export.model_save_dir, "models")
         self.assertEqual(cfg.web.visible_candles, 70)
         self.assertTrue(cfg.notifications.api_enabled)
         self.assertEqual(len(cfg.assets), 3)
@@ -52,14 +55,14 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         btc_4h = cfg.get_asset("btc_4h")
         self.assertTrue(btc_4h.enabled)
         self.assertEqual(btc_4h.market.timeframe, "4h")
-        self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8084)
-        self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8085)
+        self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8082)
+        self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8083)
 
         btc_1d = cfg.get_asset("btc_1d")
         self.assertTrue(btc_1d.enabled)
         self.assertEqual(btc_1d.market.timeframe, "1d")
-        self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8086)
-        self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8087)
+        self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8084)
+        self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8085)
 
         # Verify inline override in bot.json can disable an asset
         raw_override = copy.deepcopy(self.bot_raw)
@@ -158,6 +161,7 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         for path in (
             ["typo_root"],
             ["storage", "unknown_flag"],
+            ["export", "unknown_flag"],
             ["web", "extra"],
             ["notifications", "extra"],
         ):

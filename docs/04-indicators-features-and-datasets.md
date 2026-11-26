@@ -62,6 +62,7 @@ For `configs/assets/btc_1h.json` (`W = 31`, 5 base features + 6 indicator output
 ### Exact `NeuralNetwork` v0.6.0 Contract
 - CSV values are formatted with `%.9g` (exact 32-bit float round-trip matching `libnn::Dataset::save_csv()`).
 - Generated `nn_config.json` contains **zero unknown keys**, enforces **`validation_shuffle: false`** (strictly chronological split preventing future data leakage), enables **`keep_best_validation_model: true`**, and pre-populates `server.host` and `server.port` from the asset configuration.
+- Root `configs/bot.json` includes an optional `"export"` block (`output_dir`, `dataset_path_prefix`, `model_save_dir`) so exported `nn_config.json` files automatically emit `NeuralNetwork`-ready relative paths (e.g. `"data/<file>.csv"` and `"models/<asset>_<kind>.json"`) without needing CLI flags on every run (set `"dataset_path_prefix": ""` to emit absolute local CSV paths instead).
 - `feature_schema.json` stores a SHA-256 `feature_hash` so live inference (`v0.4.0+`) verifies that the loaded model and active indicator configuration match.
 
 ---

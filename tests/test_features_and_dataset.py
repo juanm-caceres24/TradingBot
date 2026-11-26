@@ -287,6 +287,10 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertIn("[signal] samples=54", output_text)
             self.assertTrue((out_syn / "btc_1h_candles_nn_config.json").is_file())
             self.assertTrue((out_syn / "btc_1h_signal_nn_config.json").is_file())
+            # Root configs/bot.json configures export.dataset_path_prefix="data" and model_save_dir="models"
+            syn_nn_cfg = json.loads((out_syn / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(syn_nn_cfg["training"]["dataset_path"], "data/btc_1h_candles_31to7.csv")
+            self.assertEqual(syn_nn_cfg["model"]["save_path"], "models/btc_1h_candles.json")
 
             # Mode 2: export from local SQLite database
             db_path = tmp_path / "market.db"
@@ -329,6 +333,12 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertEqual(rc2, 0)
             self.assertIn("[candles] samples=44", buf2.getvalue())
             self.assertTrue((out_db / "btc_1h_candles_schema.json").is_file())
+            # When export.dataset_path_prefix is omitted/empty, dataset_path falls back to absolute CSV path
+            db_nn_cfg = json.loads((out_db / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                db_nn_cfg["training"]["dataset_path"],
+                str((out_db / "btc_1h_candles_31to7.csv").resolve()),
+            )
 
             # CLI validation errors
             with redirect_stderr(io.StringIO()):

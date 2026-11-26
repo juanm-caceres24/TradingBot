@@ -42,6 +42,8 @@ def export_dataset(
     schema_path: str | Path | None = None,
     nn_config_path: str | Path | None = None,
     model_save_path: str | None = None,
+    dataset_path_prefix: str = "",
+    model_save_dir: str = "models",
     training_options: NNTrainingOptions | None = None,
 ) -> ExportSummary:
     """Export sliding-window CSV, feature_schema.json, and libnn nn_config.json."""
@@ -70,10 +72,15 @@ def export_dataset(
         if nn_config_path is not None
         else (out_dir / f"{asset.id}_{model_kind}_nn_config.json")
     )
+    clean_model_dir = model_save_dir.strip().rstrip("/")
     resolved_model_save = (
         model_save_path
         if model_save_path is not None
-        else f"models/{asset.id}_{model_kind}.json"
+        else (
+            f"{clean_model_dir}/{asset.id}_{model_kind}.json"
+            if clean_model_dir
+            else f"{asset.id}_{model_kind}.json"
+        )
     )
 
     resolved_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -105,10 +112,16 @@ def export_dataset(
                     class_counts["HOLD"] += 1
 
     save_feature_schema(schema, resolved_schema)
+    clean_prefix = dataset_path_prefix.strip().rstrip("/")
+    nn_dataset_path = (
+        f"{clean_prefix}/{resolved_csv.name}"
+        if clean_prefix
+        else str(resolved_csv.resolve())
+    )
     nn_cfg = build_nn_config_dict(
         asset,
         schema,
-        dataset_path=str(resolved_csv.resolve()),
+        dataset_path=nn_dataset_path,
         model_save_path=resolved_model_save,
         options=opts,
     )
