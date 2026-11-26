@@ -79,33 +79,34 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
         asset = load_asset_config(BTC_1H_ASSET_PATH)
         pipeline = FeaturePipeline(asset)
 
-        # btc_1h indicators: sma_20 (19), ema_50 (49), rsi_14 (14), atr_14 (14), squeeze_20 (38)
-        self.assertEqual(pipeline.max_warmup, 49)
-        # 5 base OHLCV + (sma=1, ema=1, rsi=1, atr=1, squeeze=2) = 11 features/bar * 31 = 341
+        # btc_1h indicators: ema_20 (19), ema_55 (54), sma_200 (199), rsi_14 (14), squeeze_20 (38)
+        self.assertEqual(pipeline.max_warmup, 199)
+        # 5 base OHLCV + (ema20=1, ema55=1, sma200=1, rsi=1, squeeze=2) = 11 features/bar * 24 = 264
         schema_c = pipeline.build_schema("candles")
         self.assertEqual(len(schema_c.per_bar_features), 11)
-        self.assertEqual(schema_c.input_size, 341)
-        self.assertEqual(schema_c.output_size, 28)  # 7 * 4
+        self.assertEqual(schema_c.input_size, 264)
+        self.assertEqual(schema_c.output_size, 24)  # 6 * 4
 
         schema_s = pipeline.build_schema("signal")
-        self.assertEqual(schema_s.input_size, 341)
+        self.assertEqual(schema_s.input_size, 264)
         self.assertEqual(schema_s.output_size, 3)
 
-        # Strictly reject insufficient bars (max_warmup + input_window = 49 + 31 = 80 required)
-        bars_79 = _make_synthetic_bars(79)
+        # Strictly reject insufficient bars (max_warmup + input_window = 199 + 24 = 223 required)
+        bars_222 = _make_synthetic_bars(222)
         with self.assertRaises(InsufficientDataError):
-            pipeline.build_latest_inference_window(bars_79)
+            pipeline.build_latest_inference_window(bars_222)
 
-        bars_80 = _make_synthetic_bars(80)
-        ctx = pipeline.build_latest_inference_window(bars_80)
-        self.assertEqual(len(ctx.vector), 341)
+        bars_223 = _make_synthetic_bars(223)
+        ctx = pipeline.build_latest_inference_window(bars_223)
+        self.assertEqual(len(ctx.vector), 264)
+        self.assertIsNotNone(ctx.atr)
         self.assertTrue(all(math.isfinite(v) for v in ctx.vector))
         # Anchor candle itself has close_rel == 0.0 (anchor_close - anchor_close) / scale
         # Last bar's close_rel is at index -11 + 3 = -8
         self.assertAlmostEqual(ctx.vector[-8], 0.0, places=9)
 
         # Earlier anchor overlapping warmup must return None
-        self.assertIsNone(pipeline.build_input_window(bars_80, 78))
+        self.assertIsNone(pipeline.build_input_window(bars_223, 221))
 
     def test_triple_barrier_labeling_long_short_hold_and_ambiguous_bar(self) -> None:
         raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -145,6 +146,41 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
         bars_flat = [_bar(i, 100.0, 100.5, 99.5, 100.0) for i in range(4)]
         self.assertEqual(pipeline.encode_signal_target(bars_flat, 0, 100.0), [1.0, 0.0, 0.0])
 
+        # ATR-multiple mode: ATR=2.0, TP=1.5*ATR (+3.0 -> 103.0), SL=1.0*ATR (-2.0 -> 98.0)
+        raw_atr = copy.deepcopy(raw)
+        raw_atr["features"]["triple_barrier"] = {
+            "mode": "atr_multiple",
+            "take_profit_atr": 1.5,
+            "stop_loss_atr": 1.0,
+        }
+        pipe_atr = FeaturePipeline(parse_asset_dict(raw_atr, base_dir=BTC_1H_ASSET_PATH.parent))
+        # +2.5 only reaches 102.5 (< 103.0 TP) -> HOLD with ATR=2.0, whereas LONG with ATR=1.0 (TP=101.5)
+        self.assertEqual(pipe_atr.encode_signal_target(bars_long, 0, 100.0, atr=2.0), [1.0, 0.0, 0.0])
+        self.assertEqual(pipe_atr.encode_signal_target(bars_long, 0, 100.0, atr=1.0), [0.0, 1.0, 0.0])
+        self.assertEqual(pipe_atr.encode_signal_target(bars_short, 0, 100.0, atr=1.0), [0.0, 0.0, 1.0])
+        # Extreme ATR where tp_dist >= anchor_close must still floor tp_short > 0 without error
+        self.assertEqual(pipe_atr.encode_signal_target(bars_short, 0, 100.0, atr=100.0), [1.0, 0.0, 0.0])
+        with self.assertRaises(ValueError):
+            pipe_atr.encode_signal_target(bars_long, 0, 100.0, atr=None)
+
+        # pct_relative normalization combined with atr_multiple triple_barrier must compute ATR and include atr_period in warmup
+        raw_combo = copy.deepcopy(raw_atr)
+        raw_combo["indicators"] = [
+            {"id": "sma_5", "type": "sma", "params": {"period": 5}, "use_in_nn": True, "plot": "overlay"}
+        ]
+        raw_combo["features"]["normalization"] = "pct_relative"
+        raw_combo["features"]["atr_period"] = 14
+        raw_combo["features"]["input_window"] = 10
+        raw_combo["features"]["forecast_horizon"] = 3
+        combo_asset = parse_asset_dict(raw_combo, base_dir=BTC_1H_ASSET_PATH.parent)
+        combo_pipe = FeaturePipeline(combo_asset)
+        self.assertEqual(combo_pipe.max_warmup, 14)
+        combo_bars = _make_synthetic_bars(40)
+        combo_ctx = combo_pipe.build_latest_inference_window(combo_bars)
+        self.assertIsNotNone(combo_ctx.atr)
+        combo_samples = list(combo_pipe.iter_training_samples(combo_bars, "signal"))
+        self.assertEqual(len(combo_samples), 40 - 3 - (14 + 10 - 1))
+
     def test_feature_hash_changes_when_indicators_change(self) -> None:
         raw1 = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
         raw2 = copy.deepcopy(raw1)
@@ -160,7 +196,7 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
         s1 = FeaturePipeline(parse_asset_dict(raw1, base_dir=BTC_1H_ASSET_PATH.parent)).build_schema("candles")
         s2 = FeaturePipeline(parse_asset_dict(raw2, base_dir=BTC_1H_ASSET_PATH.parent)).build_schema("candles")
         self.assertNotEqual(s1.feature_hash, s2.feature_hash)
-        self.assertEqual(s2.input_size, s1.input_size + 3 * 31)
+        self.assertEqual(s2.input_size, s1.input_size + 3 * 24)
 
     def test_pct_relative_stride_24_7_gap_exclusion_and_schema_integrity(self) -> None:
         raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -168,14 +204,14 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
         raw["features"]["stride"] = 2
         asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
         pipeline = FeaturePipeline(asset)
-        bars = _make_synthetic_bars(120)
+        bars = _make_synthetic_bars(262)
 
         samples = list(pipeline.iter_training_samples(bars, "candles"))
-        # first_anchor = 49 + 31 - 1 = 79, last_anchor_excl = 120 - 7 = 113, stride = 2 -> range(79, 113, 2) = 17
+        # first_anchor = 199 + 24 - 1 = 222, last_anchor_excl = 262 - 6 = 256, stride = 2 -> range(222, 256, 2) = 17
         self.assertEqual(len(samples), 17)
 
         # Introduce a timestamp gap in 24/7 schedule -> windows spanning the gap are excluded!
-        gapped = bars[:90] + bars[92:]
+        gapped = bars[:235] + bars[237:]
         gapped_samples = list(pipeline.iter_training_samples(gapped, "candles"))
         self.assertLess(len(gapped_samples), len(samples))
 
@@ -199,7 +235,7 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
 class TestDatasetExporterAndNNConfig(unittest.TestCase):
     def test_export_candles_and_signal_libnn_v060_parity(self) -> None:
         asset = load_asset_config(BTC_1H_ASSET_PATH)
-        bars = _make_synthetic_bars(150)
+        bars = _make_synthetic_bars(292)
 
         with tempfile.TemporaryDirectory() as tmp:
             # 1) Candle Predictor export
@@ -210,33 +246,33 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 output_dir=tmp,
                 training_options=NNTrainingOptions(hidden_layers=(64, 32), epochs=50),
             )
-            # Total=150, first_anchor = 49 + 31 - 1 = 79, last_anchor_excl = 150 - 7 = 143 -> 64 samples
+            # Total=292, first_anchor = 199 + 24 - 1 = 222, last_anchor_excl = 292 - 6 = 286 -> 64 samples
             self.assertEqual(sum_c.samples_written, 64)
-            self.assertEqual(sum_c.input_size, 341)
-            self.assertEqual(sum_c.output_size, 28)
+            self.assertEqual(sum_c.input_size, 264)
+            self.assertEqual(sum_c.output_size, 24)
 
             lines = sum_c.csv_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 1 + 64)  # header + 64 rows
             header = lines[0].split(",")
-            self.assertEqual(len(header), 341 + 28)
+            self.assertEqual(len(header), 264 + 24)
             first_row = [float(x) for x in lines[1].split(",")]
-            self.assertEqual(len(first_row), 341 + 28)
+            self.assertEqual(len(first_row), 264 + 24)
             self.assertTrue(all(math.isfinite(x) for x in first_row))
 
             loaded_schema = load_feature_schema(sum_c.schema_path)
-            self.assertEqual(loaded_schema.input_size, 341)
-            self.assertEqual(loaded_schema.output_size, 28)
+            self.assertEqual(loaded_schema.input_size, 264)
+            self.assertEqual(loaded_schema.output_size, 24)
 
             nn_cfg_c = json.loads(sum_c.nn_config_path.read_text(encoding="utf-8"))
             validate_nn_config_dict(nn_cfg_c)
             self.assertEqual(nn_cfg_c["training"]["loss"], "mse")
             self.assertFalse(nn_cfg_c["training"]["validation_shuffle"])
             self.assertTrue(nn_cfg_c["training"]["keep_best_validation_model"])
-            self.assertEqual(nn_cfg_c["model"]["layers"][0], {"size": 341})
-            self.assertEqual(nn_cfg_c["model"]["layers"][-1], {"size": 28, "activation": "linear"})
+            self.assertEqual(nn_cfg_c["model"]["layers"][0], {"size": 264})
+            self.assertEqual(nn_cfg_c["model"]["layers"][-1], {"size": 24, "activation": "linear"})
             self.assertEqual(nn_cfg_c["server"]["port"], 8080)
 
-            # 2) Signal Classifier export
+            # 2) Signal Classifier export (with ATR-multiple triple barrier schema round-trip)
             sum_s = export_dataset(
                 asset,
                 bars,
@@ -244,6 +280,8 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 output_dir=tmp,
             )
             self.assertEqual(sum_s.samples_written, 64)
+            loaded_sig_schema = load_feature_schema(sum_s.schema_path)
+            self.assertEqual(loaded_sig_schema.triple_barrier["mode"], "atr_multiple")
             self.assertIsNotNone(sum_s.class_counts)
             assert sum_s.class_counts is not None
             self.assertEqual(sum(sum_s.class_counts.values()), 64)
@@ -272,7 +310,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                         "--kind",
                         "both",
                         "--synthetic-candles",
-                        "140",
+                        "282",
                         "--output-dir",
                         str(out_syn),
                         "--hidden",
@@ -289,7 +327,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertTrue((out_syn / "btc_1h_signal_nn_config.json").is_file())
             # Root configs/bot.json configures export.dataset_path_prefix="data" and model_save_dir="models"
             syn_nn_cfg = json.loads((out_syn / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
-            self.assertEqual(syn_nn_cfg["training"]["dataset_path"], "data/btc_1h_candles_31to7.csv")
+            self.assertEqual(syn_nn_cfg["training"]["dataset_path"], "data/btc_1h_candles_24to6.csv")
             self.assertEqual(syn_nn_cfg["model"]["save_path"], "models/btc_1h_candles.json")
 
             # Mode 2: export from local SQLite database
@@ -315,7 +353,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             )
 
             with SQLiteCandleStore(db_path) as store:
-                store.upsert_candles(_make_synthetic_bars(130))
+                store.upsert_candles(_make_synthetic_bars(272))
 
             buf2 = io.StringIO()
             with redirect_stdout(buf2):
@@ -337,8 +375,37 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             db_nn_cfg = json.loads((out_db / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 db_nn_cfg["training"]["dataset_path"],
-                str((out_db / "btc_1h_candles_31to7.csv").resolve()),
+                str((out_db / "btc_1h_candles_24to6.csv").resolve()),
             )
+
+            # CLI overrides: --dataset-path-prefix "" forces absolute CSV path; --model-save-dir overrides models dir
+            out_override = tmp_path / "override_exports"
+            buf3 = io.StringIO()
+            with redirect_stdout(buf3):
+                rc3 = export_app.main(
+                    [
+                        str(BOT_CONFIG_PATH),
+                        "--asset",
+                        "btc_1h",
+                        "--kind",
+                        "candles",
+                        "--synthetic-candles",
+                        "240",
+                        "--output-dir",
+                        str(out_override),
+                        "--dataset-path-prefix",
+                        "",
+                        "--model-save-dir",
+                        "custom_models",
+                    ]
+                )
+            self.assertEqual(rc3, 0)
+            ov_cfg = json.loads((out_override / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                ov_cfg["training"]["dataset_path"],
+                str((out_override / "btc_1h_candles_24to6.csv").resolve()),
+            )
+            self.assertEqual(ov_cfg["model"]["save_path"], "custom_models/btc_1h_candles.json")
 
             # CLI validation errors
             with redirect_stderr(io.StringIO()):
@@ -348,6 +415,22 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 )
                 self.assertEqual(
                     export_app.main([str(bot_cfg_path), "--start", "2025-02-01", "--end", "2025-01-01"]),
+                    2,
+                )
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--output-dir", ""]),
+                    2,
+                )
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--model-save-dir", ""]),
+                    2,
+                )
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--model-save-dir", "/"]),
+                    2,
+                )
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--dataset-path-prefix", "/"]),
                     2,
                 )
 

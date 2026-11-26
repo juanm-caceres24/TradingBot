@@ -122,9 +122,9 @@ class TestNeuralNetworkClient(unittest.TestCase):
 
     def test_asset_nn_client_dual_models_and_schema_mismatch(self) -> None:
         raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
-        # btc_1h expects input_size=341, candle output=28, signal output=3
-        srv_c, th_c, port_c = _make_mock_nn_server(341, [0.05] * 28, latency_us=14)
-        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.15, 0.75, 0.10], latency_us=9)
+        # btc_1h expects input_size=264, candle output=24, signal output=3
+        srv_c, th_c, port_c = _make_mock_nn_server(264, [0.05] * 24, latency_us=14)
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.15, 0.75, 0.10], latency_us=9)
 
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -154,13 +154,13 @@ class TestNeuralNetworkClient(unittest.TestCase):
                     {"candle_predictor": True, "signal_classifier": True},
                 )
                 infos = client.verify_all()
-                self.assertEqual(infos["candle_predictor"].output_size, 28)
+                self.assertEqual(infos["candle_predictor"].output_size, 24)
                 self.assertEqual(infos["signal_classifier"].output_size, 3)
 
-                vec = [0.0] * 341
+                vec = [0.0] * 264
                 raw_c = client.predict_candles(vec)
                 assert raw_c is not None
-                self.assertEqual(len(raw_c.output), 28)
+                self.assertEqual(len(raw_c.output), 24)
 
                 sig = client.predict_signal(vec)
                 assert sig is not None
@@ -186,11 +186,11 @@ class TestNeuralNetworkClient(unittest.TestCase):
             NeuralNetworkClient("127.0.0.1", 8080, timeout_sec=float("nan"))
 
         # Test invalid output shapes and probability bounds from mock servers
-        srv_bad_c, th_bad_c, port_bad_c = _make_mock_nn_server(341, [0.1] * 4)  # wrong length (expects 28)
-        srv_neg_s, th_neg_s, port_neg_s = _make_mock_nn_server(341, [-0.1, 0.9, 0.2])  # negative prob
-        srv_sum_s, th_sum_s, port_sum_s = _make_mock_nn_server(341, [0.5, 0.5, 0.5])  # sum=1.5
-        srv_len_s, th_len_s, port_len_s = _make_mock_nn_server(341, [0.5, 0.5])  # wrong length (expects 3)
-        srv_extra, th_extra, port_extra = _make_mock_nn_server(341, [0.42, 0.58])  # extra model
+        srv_bad_c, th_bad_c, port_bad_c = _make_mock_nn_server(264, [0.1] * 4)  # wrong length (expects 24)
+        srv_neg_s, th_neg_s, port_neg_s = _make_mock_nn_server(264, [-0.1, 0.9, 0.2])  # negative prob
+        srv_sum_s, th_sum_s, port_sum_s = _make_mock_nn_server(264, [0.5, 0.5, 0.5])  # sum=1.5
+        srv_len_s, th_len_s, port_len_s = _make_mock_nn_server(264, [0.5, 0.5])  # wrong length (expects 3)
+        srv_extra, th_extra, port_extra = _make_mock_nn_server(264, [0.42, 0.58])  # extra model
 
         servers = (
             (srv_bad_c, th_bad_c),
@@ -200,7 +200,7 @@ class TestNeuralNetworkClient(unittest.TestCase):
             (srv_extra, th_extra),
         )
         try:
-            vec = [0.0] * 341
+            vec = [0.0] * 264
             raw_base = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
             raw_base["neural_networks"]["candle_predictor"] = {
                 "enabled": True,

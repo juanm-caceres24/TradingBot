@@ -94,18 +94,25 @@ def _ws_send_masked(sock: socket.socket, opcode: int, payload: bytes = b"") -> N
 
 
 class TestDashboardWebServerAndAPI(unittest.TestCase):
+    def test_rfc6455_accept_key_official_vector(self) -> None:
+        # RFC 6455 Section 1.3 official handshake test vector
+        self.assertEqual(
+            compute_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        )
+
     def test_rest_api_alerts_cursor_actions_and_websockets(self) -> None:
         bullish_rel: list[float] = []
-        for step in range(1, 8):
+        for step in range(1, 7):
             base = 0.30 * step
             bullish_rel.extend([base - 0.05, base + 0.35, base - 0.15, base + 0.12])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(341, bullish_rel, latency_us=10)
-        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.05, 0.85, 0.10], latency_us=6)
+        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=10)
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.05, 0.85, 0.10], latency_us=6)
 
         try:
             start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
-            clock = {"now": start_ms + 120 * HOUR_MS + 10_000}
+            clock = {"now": start_ms + 300 * HOUR_MS + 10_000}
             mono = {"t": 100.0}
 
             btc_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -170,7 +177,7 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
                     code, latest = _http_json(f"{base}/api/assets/btc_1h/latest?visible=50")
                     self.assertEqual(code, 200)
                     self.assertEqual(len(latest["candles"]), 50)
-                    self.assertEqual(len(latest["prediction"]["predicted_candles"]), 7)
+                    self.assertEqual(len(latest["prediction"]["predicted_candles"]), 6)
 
                     code, _ = _http_json(f"{base}/api/assets/nonexistent/latest")
                     self.assertEqual(code, 404)

@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-_WS_MAGIC_GUID = "258EAFA5-E914-47CF-95CA-C5AB0DC85B11"
+_WS_MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 OPCODE_CONTINUATION = 0x0
 OPCODE_TEXT = 0x1

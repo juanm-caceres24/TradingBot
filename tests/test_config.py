@@ -46,8 +46,12 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1h.market.symbol, "BTCUSDT")
         self.assertEqual(btc_1h.market.timeframe, "1h")
         self.assertEqual(btc_1h.provider.name, "binance_spot")
-        self.assertEqual(btc_1h.features.input_window, 31)
-        self.assertEqual(btc_1h.features.forecast_horizon, 7)
+        self.assertEqual(btc_1h.features.input_window, 24)
+        self.assertEqual(btc_1h.features.forecast_horizon, 6)
+        self.assertEqual(btc_1h.features.triple_barrier.mode, "atr_multiple")
+        self.assertEqual(btc_1h.features.triple_barrier.take_profit_atr, 1.5)
+        self.assertEqual(btc_1h.features.triple_barrier.stop_loss_atr, 1.0)
+        self.assertTrue(btc_1h.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_1h.alerts.consecutive_candles, 2)
         self.assertEqual(btc_1h.alerts.cooldown_candles, 5)
         self.assertEqual(btc_1h.alerts.actions, ("LONG", "SHORT"))
@@ -55,14 +59,33 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         btc_4h = cfg.get_asset("btc_4h")
         self.assertTrue(btc_4h.enabled)
         self.assertEqual(btc_4h.market.timeframe, "4h")
+        self.assertEqual(btc_4h.features.input_window, 24)
+        self.assertEqual(btc_4h.features.forecast_horizon, 6)
+        self.assertEqual(btc_4h.features.triple_barrier.mode, "atr_multiple")
+        self.assertEqual(btc_4h.features.triple_barrier.take_profit_atr, 1.5)
+        self.assertEqual(btc_4h.features.triple_barrier.stop_loss_atr, 1.0)
+        self.assertTrue(btc_4h.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8082)
         self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8083)
 
         btc_1d = cfg.get_asset("btc_1d")
         self.assertTrue(btc_1d.enabled)
         self.assertEqual(btc_1d.market.timeframe, "1d")
+        self.assertEqual(btc_1d.features.input_window, 24)
+        self.assertEqual(btc_1d.features.forecast_horizon, 7)
+        self.assertEqual(btc_1d.features.triple_barrier.mode, "atr_multiple")
+        self.assertEqual(btc_1d.features.triple_barrier.take_profit_atr, 1.8)
+        self.assertEqual(btc_1d.features.triple_barrier.stop_loss_atr, 1.2)
+        self.assertTrue(btc_1d.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8084)
         self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8085)
+
+        # Reject invalid root-slash export paths
+        for bad_export in ({"model_save_dir": "/"}, {"dataset_path_prefix": "/"}):
+            raw_exp = copy.deepcopy(self.bot_raw)
+            raw_exp["export"] = {**raw_exp["export"], **bad_export}
+            with self.assertRaises(ConfigError):
+                parse_config_dict(raw_exp, base_dir=self.bot_dir)
 
         # Verify inline override in bot.json can disable an asset
         raw_override = copy.deepcopy(self.bot_raw)
@@ -230,8 +253,14 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_asset_dict(raw_act, base_dir=self.asset_dir)
 
-        # Triple barrier >= 1.0 rejected (prevents non-positive SL/TP prices)
-        for bad_tb in ({"take_profit_pct": 1.0, "stop_loss_pct": 0.02}, {"take_profit_pct": 0.02, "stop_loss_pct": 1.5}):
+        # Triple barrier validation (both pct and atr_multiple modes)
+        for bad_tb in (
+            {"take_profit_pct": 1.0, "stop_loss_pct": 0.02},
+            {"take_profit_pct": 0.02, "stop_loss_pct": 1.5},
+            {"mode": "atr_multiple", "take_profit_atr": 0.0, "stop_loss_atr": 1.0},
+            {"mode": "atr_multiple", "take_profit_atr": 1.5, "stop_loss_pct": 0.01},
+            {"mode": "unknown_mode", "take_profit_pct": 0.02, "stop_loss_pct": 0.01},
+        ):
             raw_tb = copy.deepcopy(self.asset_raw)
             raw_tb["features"]["triple_barrier"] = bad_tb
             with self.assertRaises(ConfigError):

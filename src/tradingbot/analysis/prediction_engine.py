@@ -150,6 +150,7 @@ class PredictionEngine:
             ctx.anchor_close,
             predicted_candles=predicted_candles,
             signal=signal_pred,
+            anchor_atr=ctx.atr,
         )
 
         return PredictionSnapshot(
