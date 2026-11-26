@@ -1,13 +1,14 @@
 # Storage Engine & Gap Detection (`SQLiteCandleStore`, `GapDetector`)
 
-This document describes the local persistence layer in `src/tradingbot/storage/` and the half-open time-interval model used for gap detection and historical synchronization.
+This document describes the local persistence layer in `src/tradingbot/storage/` and the half-open time-interval model used for multi-asset gap detection, prediction auditing, and external-consumer alert persistence.
 
 ---
 
 ## 1. Design Philosophy
 
 - **Raw OHLCV only in the database:** `candles` stores exclusively raw market bars (`open`, `high`, `low`, `close`, `volume`, timestamps, and `is_closed`). Technical indicators are computed dynamically by the indicator engine so adding or editing indicators never requires database migrations or re-downloading historical data.
-- **Zero external database servers:** Uses Python's built-in `sqlite3` module storing a single local file inside gitignored `data/` (e.g. `data/market.db`).
+- **Multi-asset & multi-timeframe native:** All assets and timeframes (e.g., `BTCUSDT 1h`, `BTCUSDT 1w`, `NVDA 1h`) coexist inside a single local SQLite file in gitignored `data/` (e.g. `data/market.db`).
+- **Zero external database servers:** Uses Python's built-in `sqlite3` module with safe additive schema migration support.
 - **Abstract contract (`CandleStore`):** All higher-level services depend on the `CandleStore` ABC (`src/tradingbot/storage/base.py`), keeping future storage backends pluggable.
 
 ---
@@ -32,14 +33,19 @@ CREATE TABLE IF NOT EXISTS candles (
 ) WITHOUT ROWID;
 ```
 - **Automatic deduplication:** Upserts (`ON CONFLICT DO UPDATE`) safely overwrite an active candle as it updates intra-bar and finalize it (`is_closed = 1`) on candle close without creating duplicates.
-- **Clustered B-Tree locality:** `WITHOUT ROWID` physically orders candles by `(provider, symbol, timeframe, open_time_ms)`, eliminating a secondary index and making range scans fast even across millions of 1-minute bars.
-- **Concurrency:** Configured with `PRAGMA journal_mode = WAL`, `PRAGMA busy_timeout`, and an internal `RLock` so the background collector and Web UI can access the database concurrently without lock errors.
+- **Clustered B-Tree locality:** `WITHOUT ROWID` physically orders candles by `(provider, symbol, timeframe, open_time_ms)`, eliminating a secondary index and making range scans fast across millions of bars.
+- **Concurrency:** Configured with `PRAGMA journal_mode = WAL`, `PRAGMA busy_timeout`, and an internal `RLock` so multi-asset background collectors and the Web UI / Alerts API can access the database concurrently without lock errors.
 
 ### `sync_ranges` Table
-Records half-open intervals `[start_ms, end_ms)` that were already queried from an external API and returned empty (for example, weekends/holidays on traditional brokers or exchange maintenance windows). `GapDetector` subtracts verified sync ranges so the collector never retries known-empty periods in an infinite loop.
+Records half-open intervals `[start_ms, end_ms)` that were already queried from an external API and returned empty (for example, weekends/holidays on equity brokers or exchange maintenance windows). `GapDetector` subtracts verified sync ranges so the collector never retries known-empty periods in an infinite loop.
 
 ### `predictions` Table
-Logs live and replay neural-network prediction payloads alongside `(provider, symbol, timeframe, anchor_open_time_ms, created_at_ms, model_name)` for historical auditability and live accuracy tracking.
+Logs live and replay neural-network prediction payloads alongside `(asset_id, provider, symbol, timeframe, anchor_open_time_ms, created_at_ms, model_name)` for historical auditability and live accuracy tracking.
+
+### `alerts` Table
+Stores triggered trading alerts (`AlertEvent`) with a monotonically increasing `id`, `(asset_id, provider, symbol, timeframe, anchor_open_time_ms, created_at_ms, action, confidence, consecutive_hits, rule_name, payload_json, acknowledged)`:
+- Supports **cursor-based polling** via `get_alerts(since_id=N)` (returning `id > N` in ascending `id` order) so external notification consumers (Telegram, WhatsApp, email bots) never miss or duplicate alerts across restarts.
+- Supports per-asset filtering, unacknowledged-only queries, and explicit acknowledgement via `acknowledge_alert(alert_id)`.
 
 ---
 

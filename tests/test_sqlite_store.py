@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from tradingbot.models import Candle, TimeRange
+from tradingbot.models import AlertEvent, Candle, TimeRange
 from tradingbot.storage import SQLiteCandleStore
 
 HOUR_MS = 3_600_000
@@ -58,6 +59,36 @@ class TestSQLiteCandleStore(unittest.TestCase):
                 store.upsert_candles([_make_candle(1)])
                 self.assertEqual(store.count_candles("binance_spot", "BTCUSDT", "1h"), 1)
 
+    def test_v010_predictions_table_migrates_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "legacy_v010.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    anchor_open_time_ms INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    model_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with SQLiteCandleStore(db_path) as store:
+                pid = store.save_prediction(
+                    "binance_spot", "BTCUSDT", "1h", 0, 100, "candle_predictor", "{}", asset_id="btc_1h"
+                )
+                self.assertEqual(pid, 1)
+                rows = store.get_predictions("binance_spot", "BTCUSDT", "1h", asset_id="btc_1h")
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["asset_id"], "btc_1h")
+
     def test_upsert_deduplicates_and_updates_open_to_closed(self) -> None:
         open_bar = _make_candle(10, close_price=111.0, is_closed=False)
         self.assertEqual(self.store.upsert_candles([open_bar]), 1)
@@ -77,23 +108,19 @@ class TestSQLiteCandleStore(unittest.TestCase):
         eth_bars = [_make_candle(i, symbol="ETHUSDT") for i in range(3)]
         self.store.upsert_candles(btc_bars + eth_bars)
 
-        # Half-open [1h, 4h) -> indices 1, 2, 3
         sliced = self.store.get_candles(
             "binance_spot", "BTCUSDT", "1h", start_ms=1 * HOUR_MS, end_ms=4 * HOUR_MS
         )
         self.assertEqual([c.open_time_ms for c in sliced], [1 * HOUR_MS, 2 * HOUR_MS, 3 * HOUR_MS])
 
-        # Latest 2 candles returned in ascending chronological order
         latest = self.store.get_latest_candles("binance_spot", "BTCUSDT", "1h", limit=2)
         self.assertEqual([c.open_time_ms for c in latest], [3 * HOUR_MS, 4 * HOUR_MS])
         self.assertEqual(self.store.get_latest_candles("binance_spot", "BTCUSDT", "1h", limit=0), [])
 
-        # Bounds and isolation
         self.assertEqual(self.store.get_bounds("binance_spot", "BTCUSDT", "1h"), (0, 4 * HOUR_MS))
         self.assertEqual(self.store.get_bounds("binance_spot", "ETHUSDT", "1h"), (0, 2 * HOUR_MS))
         self.assertIsNone(self.store.get_bounds("binance_spot", "SOLUSDT", "1h"))
 
-        # Delete partial range [1h, 3h)
         deleted = self.store.delete_candles(
             "binance_spot", "BTCUSDT", "1h", start_ms=1 * HOUR_MS, end_ms=3 * HOUR_MS
         )
@@ -109,13 +136,11 @@ class TestSQLiteCandleStore(unittest.TestCase):
         self.store.record_sync_range("binance_spot", "BTCUSDT", "1h", r1, checked_at_ms=1000)
         self.store.record_sync_range("binance_spot", "BTCUSDT", "1h", r1, checked_at_ms=2000)
         self.store.record_sync_range("binance_spot", "BTCUSDT", "1h", r2, checked_at_ms=2000)
-        # Empty range ignored safely
         self.store.record_sync_range("binance_spot", "BTCUSDT", "1h", TimeRange(5, 5), checked_at_ms=2000)
 
         all_ranges = self.store.get_sync_ranges("binance_spot", "BTCUSDT", "1h")
         self.assertEqual(all_ranges, [r1, r2])
 
-        # Query overlapping only r1 (starts inside r1, ends before r2)
         overlapping = self.store.get_sync_ranges(
             "binance_spot", "BTCUSDT", "1h", start_ms=15 * HOUR_MS, end_ms=30 * HOUR_MS
         )
@@ -124,14 +149,82 @@ class TestSQLiteCandleStore(unittest.TestCase):
     def test_prediction_audit_log(self) -> None:
         p1 = json.dumps({"action": "LONG", "confidence": 0.72})
         p2 = json.dumps({"action": "HOLD", "confidence": 0.61})
-        id1 = self.store.save_prediction("binance_spot", "BTCUSDT", "1h", 10 * HOUR_MS, 1000, "candle_predictor", p1)
-        id2 = self.store.save_prediction("binance_spot", "BTCUSDT", "1h", 11 * HOUR_MS, 2000, "signal_classifier", p2)
+        id1 = self.store.save_prediction(
+            "binance_spot", "BTCUSDT", "1h", 10 * HOUR_MS, 1000, "candle_predictor", p1, asset_id="btc_1h"
+        )
+        id2 = self.store.save_prediction(
+            "binance_spot", "BTCUSDT", "1h", 11 * HOUR_MS, 2000, "signal_classifier", p2, asset_id="btc_1h"
+        )
         self.assertGreater(id2, id1)
 
-        rows = self.store.get_predictions("binance_spot", "BTCUSDT", "1h", limit=10)
+        rows = self.store.get_predictions("binance_spot", "BTCUSDT", "1h", asset_id="btc_1h", limit=10)
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["model_name"], "signal_classifier")
         self.assertEqual(json.loads(rows[1]["payload_json"])["action"], "LONG")
+
+    def test_alerts_save_cursor_query_filter_and_ack(self) -> None:
+        a1 = AlertEvent(
+            asset_id="btc_1h",
+            provider="binance_spot",
+            symbol="BTCUSDT",
+            timeframe="1h",
+            anchor_open_time_ms=1 * HOUR_MS,
+            created_at_ms=1000,
+            action="LONG",
+            confidence=0.76,
+            consecutive_hits=2,
+            rule_name="consecutive_signal",
+            payload_json='{"rr": 2.1}',
+        )
+        a2 = AlertEvent(
+            asset_id="nvda_1h",
+            provider="broker_rest",
+            symbol="NVDA",
+            timeframe="1h",
+            anchor_open_time_ms=2 * HOUR_MS,
+            created_at_ms=2000,
+            action="SHORT",
+            confidence=0.81,
+            consecutive_hits=3,
+            rule_name="consecutive_signal",
+            payload_json='{"rr": 1.9}',
+        )
+        a3 = AlertEvent(
+            asset_id="btc_1h",
+            provider="binance_spot",
+            symbol="BTCUSDT",
+            timeframe="1h",
+            anchor_open_time_ms=8 * HOUR_MS,
+            created_at_ms=3000,
+            action="SHORT",
+            confidence=0.72,
+            consecutive_hits=2,
+            rule_name="consecutive_signal",
+            payload_json='{"rr": 1.7}',
+        )
+        id1 = self.store.save_alert(a1)
+        id2 = self.store.save_alert(a2)
+        id3 = self.store.save_alert(a3)
+        self.assertEqual((id1, id2, id3), (1, 2, 3))
+
+        # Default descending order
+        latest = self.store.get_alerts(limit=10)
+        self.assertEqual([a.alert_id for a in latest], [3, 2, 1])
+
+        # Cursor polling (since_id=1) -> ascending order [2, 3]
+        since = self.store.get_alerts(since_id=1, limit=10)
+        self.assertEqual([a.alert_id for a in since], [2, 3])
+
+        # Filter by asset_id
+        btc_only = self.store.get_alerts(asset_id="btc_1h")
+        self.assertEqual([a.alert_id for a in btc_only], [3, 1])
+
+        # Acknowledge alert 1 -> idempotent False on second ack
+        self.assertTrue(self.store.acknowledge_alert(id1))
+        self.assertFalse(self.store.acknowledge_alert(id1))
+        unack = self.store.get_alerts(unacknowledged_only=True, since_id=0)
+        self.assertEqual([a.alert_id for a in unack], [2, 3])
+        self.assertTrue(all(not a.acknowledged for a in unack))
 
 
 if __name__ == "__main__":

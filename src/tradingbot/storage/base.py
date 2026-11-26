@@ -1,4 +1,4 @@
-"""Abstract repository interface for OHLCV candles, sync ranges, and predictions."""
+"""Abstract repository interface for OHLCV candles, sync ranges, predictions, and alerts."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
-from tradingbot.models import Candle, TimeRange
+from tradingbot.models import AlertEvent, Candle, TimeRange
 
 
 class CandleStore(ABC):
-    """Storage backend contract for raw OHLCV candles and sync metadata."""
+    """Storage backend contract for raw OHLCV candles, sync metadata, predictions, and alerts."""
 
     @abstractmethod
     def close(self) -> None:
@@ -125,6 +125,8 @@ class CandleStore(ABC):
         created_at_ms: int,
         model_name: str,
         payload_json: str,
+        *,
+        asset_id: str = "",
     ) -> int:
         """Persist a prediction audit entry and return its assigned row ID."""
 
@@ -135,6 +137,26 @@ class CandleStore(ABC):
         symbol: str,
         timeframe: str,
         *,
+        asset_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Retrieve latest prediction audit entries in descending creation order."""
+
+    @abstractmethod
+    def save_alert(self, alert: AlertEvent) -> int:
+        """Persist an alert event and return its monotonically increasing alert ID."""
+
+    @abstractmethod
+    def get_alerts(
+        self,
+        *,
+        asset_id: str | None = None,
+        since_id: int | None = None,
+        unacknowledged_only: bool = False,
+        limit: int = 100,
+    ) -> list[AlertEvent]:
+        """Fetch alerts ordered by ascending id when `since_id` is given, else descending."""
+
+    @abstractmethod
+    def acknowledge_alert(self, alert_id: int) -> bool:
+        """Mark an alert as acknowledged. Returns True if a row was updated."""

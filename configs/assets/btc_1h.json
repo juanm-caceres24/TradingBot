@@ -1,16 +1,13 @@
 {
+  "id": "btc_1h",
+  "enabled": true,
   "market": {
     "symbol": "BTCUSDT",
     "timeframe": "1h",
     "market_schedule": "24/7"
   },
   "provider": {
-    "preset_path": "providers/binance_spot.json"
-  },
-  "storage": {
-    "db_path": "data/market.db",
-    "wal_mode": true,
-    "busy_timeout_ms": 5000
+    "preset_path": "../providers/binance_spot.json"
   },
   "runtime": {
     "mode": "sync_live",
@@ -88,18 +85,21 @@
       "host": "127.0.0.1",
       "port": 8081,
       "schema_path": "data/btc_1h_signal_schema.json"
-    }
+    },
+    "extra_models": {}
   },
   "analysis": {
     "min_signal_confidence": 0.55,
     "min_risk_reward": 1.5,
     "min_expected_move_pct": 0.005
   },
-  "web": {
+  "alerts": {
     "enabled": true,
-    "host": "0.0.0.0",
-    "port": 8000,
-    "visible_candles": 70,
-    "title": "TradingBot Dashboard"
+    "actions": ["LONG", "SHORT"],
+    "min_confidence": 0.70,
+    "min_risk_reward": 1.5,
+    "min_expected_move_pct": 0.005,
+    "consecutive_candles": 2,
+    "cooldown_candles": 5
   }
 }
