@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from tradingbot.models import Candle, TimeRange
+from tradingbot.models import AlertEvent, Candle, TimeRange
 from tradingbot.storage.base import CandleStore
 
 _SCHEMA_SQL = """
@@ -43,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_sync_ranges_lookup
 
 CREATE TABLE IF NOT EXISTS predictions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id TEXT NOT NULL DEFAULT '',
     provider TEXT NOT NULL,
     symbol TEXT NOT NULL,
     timeframe TEXT NOT NULL,
@@ -54,11 +55,33 @@ CREATE TABLE IF NOT EXISTS predictions (
 
 CREATE INDEX IF NOT EXISTS idx_predictions_lookup
     ON predictions (provider, symbol, timeframe, anchor_open_time_ms DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    anchor_open_time_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    consecutive_hits INTEGER NOT NULL,
+    rule_name TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_asset
+    ON alerts (asset_id, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_unack
+    ON alerts (acknowledged, id ASC);
 """
 
 
 class SQLiteCandleStore(CandleStore):
-    """Thread-safe local SQLite store for raw OHLCV candles and sync metadata."""
+    """Thread-safe local SQLite store for raw OHLCV candles, sync metadata, predictions, and alerts."""
 
     def __init__(
         self,
@@ -86,7 +109,23 @@ class SQLiteCandleStore(CandleStore):
                 self._conn.execute("PRAGMA journal_mode = WAL;")
                 self._conn.execute("PRAGMA synchronous = NORMAL;")
             self._conn.executescript(_SCHEMA_SQL)
+            self._ensure_schema_migrations()
             self._conn.commit()
+
+    def _ensure_schema_migrations(self) -> None:
+        """Apply safe additive column migrations for databases created under v0.1.0."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(predictions)").fetchall()
+        }
+        if "asset_id" not in cols:
+            self._conn.execute(
+                "ALTER TABLE predictions ADD COLUMN asset_id TEXT NOT NULL DEFAULT ''"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_predictions_asset "
+            "ON predictions (asset_id, created_at_ms DESC, id DESC)"
+        )
 
     def __enter__(self) -> SQLiteCandleStore:
         return self
@@ -112,6 +151,24 @@ class SQLiteCandleStore(CandleStore):
             close=row["close"],
             volume=row["volume"],
             is_closed=bool(row["is_closed"]),
+        )
+
+    @staticmethod
+    def _row_to_alert(row: sqlite3.Row) -> AlertEvent:
+        return AlertEvent(
+            alert_id=int(row["id"]),
+            asset_id=row["asset_id"],
+            provider=row["provider"],
+            symbol=row["symbol"],
+            timeframe=row["timeframe"],
+            anchor_open_time_ms=int(row["anchor_open_time_ms"]),
+            created_at_ms=int(row["created_at_ms"]),
+            action=row["action"],
+            confidence=float(row["confidence"]),
+            consecutive_hits=int(row["consecutive_hits"]),
+            rule_name=row["rule_name"],
+            payload_json=row["payload_json"],
+            acknowledged=bool(row["acknowledged"]),
         )
 
     def upsert_candles(self, candles: Sequence[Candle]) -> int:
@@ -385,19 +442,22 @@ class SQLiteCandleStore(CandleStore):
         created_at_ms: int,
         model_name: str,
         payload_json: str,
+        *,
+        asset_id: str = "",
     ) -> int:
         sql = """
         INSERT INTO predictions (
-            provider, symbol, timeframe, anchor_open_time_ms,
+            asset_id, provider, symbol, timeframe, anchor_open_time_ms,
             created_at_ms, model_name, payload_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._lock:
             with self._conn:
                 cur = self._conn.execute(
                     sql,
                     (
+                        asset_id,
                         provider,
                         symbol,
                         timeframe,
@@ -416,6 +476,7 @@ class SQLiteCandleStore(CandleStore):
         symbol: str,
         timeframe: str,
         *,
+        asset_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
@@ -423,14 +484,100 @@ class SQLiteCandleStore(CandleStore):
         if limit == 0:
             return []
 
+        clauses = ["provider = ?", "symbol = ?", "timeframe = ?"]
+        params: list[Any] = [provider, symbol, timeframe]
+        if asset_id is not None:
+            clauses.append("asset_id = ?")
+            params.append(asset_id)
+        params.append(limit)
+
+        sql = (
+            "SELECT id, asset_id, provider, symbol, timeframe, anchor_open_time_ms, "
+            "created_at_ms, model_name, payload_json "
+            f"FROM predictions WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at_ms DESC, id DESC LIMIT ?"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_alert(self, alert: AlertEvent) -> int:
         sql = """
-        SELECT id, provider, symbol, timeframe, anchor_open_time_ms,
-               created_at_ms, model_name, payload_json
-        FROM predictions
-        WHERE provider = ? AND symbol = ? AND timeframe = ?
-        ORDER BY created_at_ms DESC, id DESC
-        LIMIT ?
+        INSERT INTO alerts (
+            asset_id, provider, symbol, timeframe, anchor_open_time_ms,
+            created_at_ms, action, confidence, consecutive_hits,
+            rule_name, payload_json, acknowledged
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._lock:
-            rows = self._conn.execute(sql, (provider, symbol, timeframe, limit)).fetchall()
-        return [dict(r) for r in rows]
+            with self._conn:
+                cur = self._conn.execute(
+                    sql,
+                    (
+                        alert.asset_id,
+                        alert.provider,
+                        alert.symbol,
+                        alert.timeframe,
+                        alert.anchor_open_time_ms,
+                        alert.created_at_ms,
+                        alert.action,
+                        alert.confidence,
+                        alert.consecutive_hits,
+                        alert.rule_name,
+                        alert.payload_json,
+                        1 if alert.acknowledged else 0,
+                    ),
+                )
+                assert cur.lastrowid is not None
+                return int(cur.lastrowid)
+
+    def get_alerts(
+        self,
+        *,
+        asset_id: str | None = None,
+        since_id: int | None = None,
+        unacknowledged_only: bool = False,
+        limit: int = 100,
+    ) -> list[AlertEvent]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"limit must be a non-negative integer, got {limit!r}")
+        if since_id is not None and (isinstance(since_id, bool) or not isinstance(since_id, int) or since_id < 0):
+            raise ValueError(f"since_id must be a non-negative integer, got {since_id!r}")
+        if limit == 0:
+            return []
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if asset_id is not None:
+            clauses.append("asset_id = ?")
+            params.append(asset_id)
+        if since_id is not None:
+            clauses.append("id > ?")
+            params.append(since_id)
+        if unacknowledged_only:
+            clauses.append("acknowledged = 0")
+
+        where_sql = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        # Cursor pagination (since_id) returns oldest-unread-first so external consumers
+        # advance their cursor reliably without skipping alerts.
+        order_sql = "ORDER BY id ASC" if since_id is not None else "ORDER BY id DESC"
+        params.append(limit)
+
+        sql = (
+            "SELECT id, asset_id, provider, symbol, timeframe, anchor_open_time_ms, "
+            "created_at_ms, action, confidence, consecutive_hits, rule_name, "
+            f"payload_json, acknowledged FROM alerts {where_sql}{order_sql} LIMIT ?"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_alert(r) for r in rows]
+
+    def acknowledge_alert(self, alert_id: int) -> bool:
+        if isinstance(alert_id, bool) or not isinstance(alert_id, int) or alert_id < 1:
+            raise ValueError(f"alert_id must be a positive integer, got {alert_id!r}")
+        sql = "UPDATE alerts SET acknowledged = 1 WHERE id = ? AND acknowledged = 0"
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(sql, (alert_id,))
+                return int(cur.rowcount) > 0

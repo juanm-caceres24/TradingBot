@@ -1,0 +1,27 @@
+{
+  "storage": {
+    "db_path": "data/market.db",
+    "wal_mode": true,
+    "busy_timeout_ms": 5000
+  },
+  "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8000,
+    "visible_candles": 70,
+    "title": "TradingBot Dashboard"
+  },
+  "notifications": {
+    "api_enabled": true,
+    "webhooks": []
+  },
+  "assets": [
+    {
+      "config_path": "assets/btc_1h.json"
+    },
+    {
+      "config_path": "assets/btc_1w.json",
+      "enabled": false
+    }
+  ]
+}

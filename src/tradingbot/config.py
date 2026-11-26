@@ -1,5 +1,11 @@
 """Strict external JSON configuration loader and validator for TradingBot.
 
+Supports multi-asset, multi-timeframe configurations where each logical asset
+(e.g. 'btc_1h', 'btc_1w', 'nvda_1h') owns its own provider, indicator set,
+feature pipeline, dedicated/shared/disabled neural-network endpoints, and
+alerting rules, while sharing a single SQLite database, web dashboard, and
+outbound notification layer.
+
 Mirrors the strict schema discipline of NeuralNetwork (v0.6.0):
 - Zero hardcoded runtime parameters.
 - Unknown keys in any JSON section raise ConfigError immediately.
@@ -14,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tradingbot.models import Timeframe, parse_iso_to_ms
+from tradingbot.models import Timeframe, parse_iso_to_ms, validate_asset_id
 
 
 class ConfigError(ValueError):
@@ -33,6 +39,7 @@ _VALID_INDICATOR_TYPES = frozenset(
 )
 _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
+_VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
 
 
 def _reject_unknown_keys(
@@ -121,6 +128,24 @@ def _require_key(obj: dict[str, Any], key: str, section: str) -> Any:
     if key not in obj:
         raise ConfigError(f"Missing required key '{key}' in '{section}'")
     return obj[key]
+
+
+def _resolve_relative_file(path_str: str, base_dir: Path | None) -> Path:
+    file_path = Path(path_str)
+    if file_path.is_absolute() or base_dir is None:
+        return file_path
+    candidate = base_dir / file_path
+    return candidate if candidate.is_file() else file_path
+
+
+def _load_json_file(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        raise ConfigError(f"{label} file not found: {path}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"Invalid JSON in {label} '{path}': {exc}") from exc
+    return _expect_dict(raw, str(path))
 
 
 @dataclass(frozen=True)
@@ -252,6 +277,7 @@ class NeuralNetworksConfig:
     verify_schema_on_start: bool
     candle_predictor: ModelEndpointConfig
     signal_classifier: ModelEndpointConfig
+    extra_models: dict[str, ModelEndpointConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -259,6 +285,34 @@ class AnalysisConfig:
     min_signal_confidence: float
     min_risk_reward: float
     min_expected_move_pct: float
+
+
+@dataclass(frozen=True)
+class AlertRulesConfig:
+    enabled: bool
+    actions: tuple[str, ...] = ("LONG", "SHORT")
+    min_confidence: float = 0.70
+    min_risk_reward: float = 1.5
+    min_expected_move_pct: float = 0.005
+    consecutive_candles: int = 2
+    cooldown_candles: int = 5
+
+
+@dataclass(frozen=True)
+class WebhookConfig:
+    name: str
+    url: str
+    enabled: bool = True
+    timeout_sec: float = 5.0
+    headers: dict[str, str] = field(default_factory=dict)
+    auth_token_env: str = ""
+    auth_header: str = ""
+
+
+@dataclass(frozen=True)
+class NotificationsConfig:
+    api_enabled: bool = True
+    webhooks: tuple[WebhookConfig, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -271,26 +325,35 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
-class AppConfig:
+class AssetConfig:
+    id: str
+    enabled: bool
     market: MarketConfig
     provider: ProviderConfig
-    storage: StorageConfig
     runtime: RuntimeConfig
     indicators: tuple[IndicatorConfig, ...]
     features: FeaturesConfig
     neural_networks: NeuralNetworksConfig
     analysis: AnalysisConfig
+    alerts: AlertRulesConfig
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    storage: StorageConfig
     web: WebConfig
+    notifications: NotificationsConfig
+    assets: tuple[AssetConfig, ...]
 
+    @property
+    def enabled_assets(self) -> tuple[AssetConfig, ...]:
+        return tuple(a for a in self.assets if a.enabled)
 
-def _load_json_file(path: Path, label: str) -> dict[str, Any]:
-    if not path.is_file():
-        raise ConfigError(f"{label} file not found: {path}")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in {label} '{path}': {exc}") from exc
-    return _expect_dict(raw, str(path))
+    def get_asset(self, asset_id: str) -> AssetConfig:
+        for asset in self.assets:
+            if asset.id == asset_id:
+                return asset
+        raise KeyError(f"Asset '{asset_id}' not found in configuration")
 
 
 def _parse_field_selector(value: Any, path: str, fmt: str) -> int | str:
@@ -305,13 +368,9 @@ def parse_provider_dict(
     """Strictly parse and validate a provider JSON object (preset or inline)."""
     obj = _expect_dict(raw, section)
 
-    # Resolve optional preset_path and layer any inline overrides on top.
     if "preset_path" in obj:
         preset_rel = _expect_str(obj["preset_path"], f"{section}.preset_path", allow_empty=False)
-        preset_file = Path(preset_rel)
-        if not preset_file.is_absolute():
-            candidate = (base_dir / preset_file) if base_dir is not None else preset_file
-            preset_file = candidate if candidate.is_file() else preset_file
+        preset_file = _resolve_relative_file(preset_rel, base_dir)
         preset_data = _load_json_file(preset_file, "Provider preset")
         if "preset_path" in preset_data:
             raise ConfigError(
@@ -382,7 +441,6 @@ def parse_provider_dict(
             min_value=0,
         )
 
-        # params_map
         pm_raw = _expect_dict(
             _require_key(obj, "params_map", section), f"{section}.params_map"
         )
@@ -399,7 +457,6 @@ def parse_provider_dict(
             limit=_expect_str(_require_key(pm_raw, "limit", f"{section}.params_map"), f"{section}.params_map.limit", allow_empty=False),
         )
 
-        # interval_map
         im_raw = _expect_dict(
             _require_key(obj, "interval_map", section), f"{section}.interval_map"
         )
@@ -415,7 +472,6 @@ def parse_provider_dict(
                 v, f"{section}.interval_map.{k}", allow_empty=False
             )
 
-        # response_mapping
         rm_raw = _expect_dict(
             _require_key(obj, "response_mapping", section),
             f"{section}.response_mapping",
@@ -510,7 +566,6 @@ def parse_provider_dict(
             api_key_header=api_key_header,
         )
 
-    # provider_type == "synthetic"
     allowed_syn = frozenset({"name", "type", "max_candles_per_request", "synthetic"})
     _reject_unknown_keys(obj, allowed_syn, section)
     syn_raw = _expect_dict(_require_key(obj, "synthetic", section), f"{section}.synthetic")
@@ -552,67 +607,215 @@ def _parse_model_endpoint(raw: Any, path: str) -> ModelEndpointConfig:
     )
 
 
-def parse_config_dict(
-    raw: dict[str, Any], *, base_dir: Path | None = None
-) -> AppConfig:
-    """Strictly parse and validate a full TradingBot configuration dictionary."""
-    root = _expect_dict(raw, "root")
+def _parse_alert_rules(raw: Any, section: str) -> AlertRulesConfig:
+    obj = _expect_dict(raw, section)
     _reject_unknown_keys(
-        root,
+        obj,
         frozenset(
             {
+                "enabled",
+                "actions",
+                "min_confidence",
+                "min_risk_reward",
+                "min_expected_move_pct",
+                "consecutive_candles",
+                "cooldown_candles",
+            }
+        ),
+        section,
+    )
+    actions_raw = _expect_list(obj.get("actions", ["LONG", "SHORT"]), f"{section}.actions")
+    if not actions_raw:
+        raise ConfigError(f"'{section}.actions' must contain at least one action")
+    actions: list[str] = []
+    seen_actions: set[str] = set()
+    for i, item in enumerate(actions_raw):
+        act = _expect_enum(item, f"{section}.actions[{i}]", _VALID_ALERT_ACTIONS)
+        if act in seen_actions:
+            raise ConfigError(f"Duplicate action '{act}' in '{section}.actions'")
+        seen_actions.add(act)
+        actions.append(act)
+
+    return AlertRulesConfig(
+        enabled=_expect_bool(_require_key(obj, "enabled", section), f"{section}.enabled"),
+        actions=tuple(actions),
+        min_confidence=_expect_float(
+            obj.get("min_confidence", 0.70),
+            f"{section}.min_confidence",
+            exclusive_min=0.0,
+            max_value=1.0,
+        ),
+        min_risk_reward=_expect_float(
+            obj.get("min_risk_reward", 1.5),
+            f"{section}.min_risk_reward",
+            min_value=0.0,
+        ),
+        min_expected_move_pct=_expect_float(
+            obj.get("min_expected_move_pct", 0.005),
+            f"{section}.min_expected_move_pct",
+            min_value=0.0,
+        ),
+        consecutive_candles=_expect_int(
+            obj.get("consecutive_candles", 2),
+            f"{section}.consecutive_candles",
+            min_value=1,
+        ),
+        cooldown_candles=_expect_int(
+            obj.get("cooldown_candles", 5),
+            f"{section}.cooldown_candles",
+            min_value=0,
+        ),
+    )
+
+
+def _parse_notifications(raw: Any, section: str) -> NotificationsConfig:
+    obj = _expect_dict(raw, section)
+    _reject_unknown_keys(obj, frozenset({"api_enabled", "webhooks"}), section)
+    api_enabled = _expect_bool(obj.get("api_enabled", True), f"{section}.api_enabled")
+    webhooks_raw = _expect_list(obj.get("webhooks", []), f"{section}.webhooks")
+
+    webhooks: list[WebhookConfig] = []
+    seen_names: set[str] = set()
+    for i, item in enumerate(webhooks_raw):
+        wh_sec = f"{section}.webhooks[{i}]"
+        wh = _expect_dict(item, wh_sec)
+        _reject_unknown_keys(
+            wh,
+            frozenset(
+                {
+                    "name",
+                    "url",
+                    "enabled",
+                    "timeout_sec",
+                    "headers",
+                    "auth_token_env",
+                    "auth_header",
+                }
+            ),
+            wh_sec,
+        )
+        name = _expect_str(_require_key(wh, "name", wh_sec), f"{wh_sec}.name", allow_empty=False)
+        if name in seen_names:
+            raise ConfigError(f"Duplicate webhook name '{name}' in '{section}.webhooks'")
+        seen_names.add(name)
+
+        url = _expect_str(_require_key(wh, "url", wh_sec), f"{wh_sec}.url", allow_empty=False)
+        if not url.startswith(("http://", "https://")):
+            raise ConfigError(f"'{wh_sec}.url' must start with http:// or https://, got {url!r}")
+
+        headers_raw = _expect_dict(wh.get("headers", {}), f"{wh_sec}.headers")
+        headers = {
+            _expect_str(k, f"{wh_sec}.headers key", allow_empty=False): _expect_str(
+                v, f"{wh_sec}.headers.{k}", allow_empty=True
+            )
+            for k, v in headers_raw.items()
+        }
+        auth_token_env = _expect_str(wh.get("auth_token_env", ""), f"{wh_sec}.auth_token_env")
+        auth_header = _expect_str(wh.get("auth_header", ""), f"{wh_sec}.auth_header")
+        if bool(auth_token_env) != bool(auth_header):
+            raise ConfigError(
+                f"'{wh_sec}.auth_token_env' and '{wh_sec}.auth_header' must both be set or both empty"
+            )
+
+        webhooks.append(
+            WebhookConfig(
+                name=name,
+                url=url,
+                enabled=_expect_bool(wh.get("enabled", True), f"{wh_sec}.enabled"),
+                timeout_sec=_expect_float(
+                    wh.get("timeout_sec", 5.0),
+                    f"{wh_sec}.timeout_sec",
+                    exclusive_min=0.0,
+                ),
+                headers=headers,
+                auth_token_env=auth_token_env,
+                auth_header=auth_header,
+            )
+        )
+
+    return NotificationsConfig(api_enabled=api_enabled, webhooks=tuple(webhooks))
+
+
+def parse_asset_dict(
+    raw: dict[str, Any], *, base_dir: Path | None = None, section: str = "asset"
+) -> AssetConfig:
+    """Strictly parse and validate a single logical asset configuration."""
+    obj = _expect_dict(raw, section)
+    effective_base_dir = base_dir
+
+    if "config_path" in obj:
+        rel_path = _expect_str(obj["config_path"], f"{section}.config_path", allow_empty=False)
+        asset_file = _resolve_relative_file(rel_path, base_dir)
+        asset_data = _load_json_file(asset_file, "Asset configuration")
+        if "config_path" in asset_data:
+            raise ConfigError(
+                f"Nested 'config_path' is not allowed inside asset config '{asset_file}'"
+            )
+        effective_base_dir = asset_file.parent
+        merged = dict(asset_data)
+        for key, value in obj.items():
+            if key != "config_path":
+                merged[key] = value
+        obj = merged
+
+    _reject_unknown_keys(
+        obj,
+        frozenset(
+            {
+                "id",
+                "enabled",
                 "market",
                 "provider",
-                "storage",
                 "runtime",
                 "indicators",
                 "features",
                 "neural_networks",
                 "analysis",
-                "web",
+                "alerts",
             }
         ),
-        "root",
+        section,
     )
 
+    raw_id = _expect_str(_require_key(obj, "id", section), f"{section}.id", allow_empty=False)
+    try:
+        asset_id = validate_asset_id(raw_id)
+    except ValueError as exc:
+        raise ConfigError(f"Invalid '{section}.id': {exc}") from exc
+
+    enabled = _expect_bool(obj.get("enabled", True), f"{section}.enabled")
+
     # market
-    m_raw = _expect_dict(_require_key(root, "market", "root"), "market")
-    _reject_unknown_keys(m_raw, frozenset({"symbol", "timeframe", "market_schedule"}), "market")
-    symbol = _expect_str(_require_key(m_raw, "symbol", "market"), "market.symbol", allow_empty=False)
-    tf_raw = _expect_str(_require_key(m_raw, "timeframe", "market"), "market.timeframe", allow_empty=False)
+    m_sec = f"{section}.market"
+    m_raw = _expect_dict(_require_key(obj, "market", section), m_sec)
+    _reject_unknown_keys(m_raw, frozenset({"symbol", "timeframe", "market_schedule"}), m_sec)
+    symbol = _expect_str(_require_key(m_raw, "symbol", m_sec), f"{m_sec}.symbol", allow_empty=False)
+    tf_raw = _expect_str(_require_key(m_raw, "timeframe", m_sec), f"{m_sec}.timeframe", allow_empty=False)
     try:
         timeframe = Timeframe.parse(tf_raw).label
     except ValueError as exc:
-        raise ConfigError(f"Invalid 'market.timeframe': {exc}") from exc
+        raise ConfigError(f"Invalid '{m_sec}.timeframe': {exc}") from exc
     market_schedule = _expect_enum(
         m_raw.get("market_schedule", "24/7"),
-        "market.market_schedule",
+        f"{m_sec}.market_schedule",
         _VALID_SCHEDULES,
     )
     market = MarketConfig(symbol=symbol, timeframe=timeframe, market_schedule=market_schedule)
 
     # provider
     provider = parse_provider_dict(
-        _require_key(root, "provider", "root"),
-        base_dir=base_dir,
-        section="provider",
+        _require_key(obj, "provider", section),
+        base_dir=effective_base_dir,
+        section=f"{section}.provider",
     )
     if provider.type == "generic_rest" and timeframe not in provider.interval_map:
         raise ConfigError(
             f"Timeframe '{timeframe}' is not mapped in provider '{provider.name}' interval_map"
         )
 
-    # storage
-    s_raw = _expect_dict(_require_key(root, "storage", "root"), "storage")
-    _reject_unknown_keys(s_raw, frozenset({"db_path", "wal_mode", "busy_timeout_ms"}), "storage")
-    storage = StorageConfig(
-        db_path=_expect_str(_require_key(s_raw, "db_path", "storage"), "storage.db_path", allow_empty=False),
-        wal_mode=_expect_bool(s_raw.get("wal_mode", True), "storage.wal_mode"),
-        busy_timeout_ms=_expect_int(s_raw.get("busy_timeout_ms", 5000), "storage.busy_timeout_ms", min_value=0),
-    )
-
     # runtime
-    r_raw = _expect_dict(_require_key(root, "runtime", "root"), "runtime")
+    r_sec = f"{section}.runtime"
+    r_raw = _expect_dict(_require_key(obj, "runtime", section), r_sec)
     _reject_unknown_keys(
         r_raw,
         frozenset(
@@ -625,41 +828,41 @@ def parse_config_dict(
                 "predict_on_open_candle",
             }
         ),
-        "runtime",
+        r_sec,
     )
-    init_from = _expect_str(r_raw.get("initial_history_from", ""), "runtime.initial_history_from")
+    init_from = _expect_str(r_raw.get("initial_history_from", ""), f"{r_sec}.initial_history_from")
     if init_from:
         try:
             parse_iso_to_ms(init_from)
         except ValueError as exc:
-            raise ConfigError(f"Invalid 'runtime.initial_history_from': {exc}") from exc
+            raise ConfigError(f"Invalid '{r_sec}.initial_history_from': {exc}") from exc
 
     runtime = RuntimeConfig(
-        mode=_expect_enum(_require_key(r_raw, "mode", "runtime"), "runtime.mode", _VALID_RUNTIME_MODES),
+        mode=_expect_enum(_require_key(r_raw, "mode", r_sec), f"{r_sec}.mode", _VALID_RUNTIME_MODES),
         poll_interval_sec=_expect_float(
-            _require_key(r_raw, "poll_interval_sec", "runtime"),
-            "runtime.poll_interval_sec",
+            _require_key(r_raw, "poll_interval_sec", r_sec),
+            f"{r_sec}.poll_interval_sec",
             exclusive_min=0.0,
         ),
         initial_history_from=init_from,
-        fill_internal_gaps=_expect_bool(r_raw.get("fill_internal_gaps", True), "runtime.fill_internal_gaps"),
-        persist_to_db=_expect_bool(r_raw.get("persist_to_db", True), "runtime.persist_to_db"),
+        fill_internal_gaps=_expect_bool(r_raw.get("fill_internal_gaps", True), f"{r_sec}.fill_internal_gaps"),
+        persist_to_db=_expect_bool(r_raw.get("persist_to_db", True), f"{r_sec}.persist_to_db"),
         predict_on_open_candle=_expect_bool(
-            r_raw.get("predict_on_open_candle", False), "runtime.predict_on_open_candle"
+            r_raw.get("predict_on_open_candle", False), f"{r_sec}.predict_on_open_candle"
         ),
     )
 
     # indicators
-    ind_list_raw = _expect_list(_require_key(root, "indicators", "root"), "indicators")
+    ind_list_raw = _expect_list(_require_key(obj, "indicators", section), f"{section}.indicators")
     indicators: list[IndicatorConfig] = []
     seen_ids: set[str] = set()
     for idx, item in enumerate(ind_list_raw):
-        sec = f"indicators[{idx}]"
+        sec = f"{section}.indicators[{idx}]"
         item_obj = _expect_dict(item, sec)
         _reject_unknown_keys(item_obj, frozenset({"id", "type", "params", "use_in_nn", "plot"}), sec)
         ind_id = _expect_str(_require_key(item_obj, "id", sec), f"{sec}.id", allow_empty=False)
         if ind_id in seen_ids:
-            raise ConfigError(f"Duplicate indicator id '{ind_id}' in 'indicators'")
+            raise ConfigError(f"Duplicate indicator id '{ind_id}' in '{section}.indicators'")
         seen_ids.add(ind_id)
         ind_type = _expect_enum(
             _require_key(item_obj, "type", sec), f"{sec}.type", _VALID_INDICATOR_TYPES
@@ -676,7 +879,8 @@ def parse_config_dict(
         )
 
     # features
-    f_raw = _expect_dict(_require_key(root, "features", "root"), "features")
+    f_sec = f"{section}.features"
+    f_raw = _expect_dict(_require_key(obj, "features", section), f_sec)
     _reject_unknown_keys(
         f_raw,
         frozenset(
@@ -689,33 +893,35 @@ def parse_config_dict(
                 "triple_barrier",
             }
         ),
-        "features",
+        f_sec,
     )
-    tb_raw = _expect_dict(_require_key(f_raw, "triple_barrier", "features"), "features.triple_barrier")
-    _reject_unknown_keys(tb_raw, frozenset({"take_profit_pct", "stop_loss_pct"}), "features.triple_barrier")
+    tb_sec = f"{f_sec}.triple_barrier"
+    tb_raw = _expect_dict(_require_key(f_raw, "triple_barrier", f_sec), tb_sec)
+    _reject_unknown_keys(tb_raw, frozenset({"take_profit_pct", "stop_loss_pct"}), tb_sec)
     triple_barrier = TripleBarrierConfig(
         take_profit_pct=_expect_float(
-            _require_key(tb_raw, "take_profit_pct", "features.triple_barrier"),
-            "features.triple_barrier.take_profit_pct",
+            _require_key(tb_raw, "take_profit_pct", tb_sec),
+            f"{tb_sec}.take_profit_pct",
             exclusive_min=0.0,
         ),
         stop_loss_pct=_expect_float(
-            _require_key(tb_raw, "stop_loss_pct", "features.triple_barrier"),
-            "features.triple_barrier.stop_loss_pct",
+            _require_key(tb_raw, "stop_loss_pct", tb_sec),
+            f"{tb_sec}.stop_loss_pct",
             exclusive_min=0.0,
         ),
     )
     features = FeaturesConfig(
-        input_window=_expect_int(_require_key(f_raw, "input_window", "features"), "features.input_window", min_value=1),
-        forecast_horizon=_expect_int(_require_key(f_raw, "forecast_horizon", "features"), "features.forecast_horizon", min_value=1),
-        stride=_expect_int(f_raw.get("stride", 1), "features.stride", min_value=1),
-        normalization=_expect_enum(_require_key(f_raw, "normalization", "features"), "features.normalization", _VALID_NORMALIZATIONS),
-        atr_period=_expect_int(f_raw.get("atr_period", 14), "features.atr_period", min_value=1),
+        input_window=_expect_int(_require_key(f_raw, "input_window", f_sec), f"{f_sec}.input_window", min_value=1),
+        forecast_horizon=_expect_int(_require_key(f_raw, "forecast_horizon", f_sec), f"{f_sec}.forecast_horizon", min_value=1),
+        stride=_expect_int(f_raw.get("stride", 1), f"{f_sec}.stride", min_value=1),
+        normalization=_expect_enum(_require_key(f_raw, "normalization", f_sec), f"{f_sec}.normalization", _VALID_NORMALIZATIONS),
+        atr_period=_expect_int(f_raw.get("atr_period", 14), f"{f_sec}.atr_period", min_value=1),
         triple_barrier=triple_barrier,
     )
 
     # neural_networks
-    nn_raw = _expect_dict(_require_key(root, "neural_networks", "root"), "neural_networks")
+    nn_sec = f"{section}.neural_networks"
+    nn_raw = _expect_dict(_require_key(obj, "neural_networks", section), nn_sec)
     _reject_unknown_keys(
         nn_raw,
         frozenset(
@@ -724,50 +930,108 @@ def parse_config_dict(
                 "verify_schema_on_start",
                 "candle_predictor",
                 "signal_classifier",
+                "extra_models",
             }
         ),
-        "neural_networks",
+        nn_sec,
     )
+    extra_raw = _expect_dict(nn_raw.get("extra_models", {}), f"{nn_sec}.extra_models")
+    extra_models: dict[str, ModelEndpointConfig] = {}
+    for model_key, endpoint_raw in extra_raw.items():
+        clean_key = _expect_str(model_key, f"{nn_sec}.extra_models key", allow_empty=False)
+        extra_models[clean_key] = _parse_model_endpoint(
+            endpoint_raw, f"{nn_sec}.extra_models.{clean_key}"
+        )
+
     neural_networks = NeuralNetworksConfig(
-        timeout_sec=_expect_float(nn_raw.get("timeout_sec", 5.0), "neural_networks.timeout_sec", exclusive_min=0.0),
+        timeout_sec=_expect_float(nn_raw.get("timeout_sec", 5.0), f"{nn_sec}.timeout_sec", exclusive_min=0.0),
         verify_schema_on_start=_expect_bool(
             nn_raw.get("verify_schema_on_start", True),
-            "neural_networks.verify_schema_on_start",
+            f"{nn_sec}.verify_schema_on_start",
         ),
         candle_predictor=_parse_model_endpoint(
-            _require_key(nn_raw, "candle_predictor", "neural_networks"),
-            "neural_networks.candle_predictor",
+            _require_key(nn_raw, "candle_predictor", nn_sec),
+            f"{nn_sec}.candle_predictor",
         ),
         signal_classifier=_parse_model_endpoint(
-            _require_key(nn_raw, "signal_classifier", "neural_networks"),
-            "neural_networks.signal_classifier",
+            _require_key(nn_raw, "signal_classifier", nn_sec),
+            f"{nn_sec}.signal_classifier",
         ),
+        extra_models=extra_models,
     )
 
     # analysis
-    a_raw = _expect_dict(_require_key(root, "analysis", "root"), "analysis")
+    a_sec = f"{section}.analysis"
+    a_raw = _expect_dict(_require_key(obj, "analysis", section), a_sec)
     _reject_unknown_keys(
         a_raw,
         frozenset({"min_signal_confidence", "min_risk_reward", "min_expected_move_pct"}),
-        "analysis",
+        a_sec,
     )
     analysis = AnalysisConfig(
         min_signal_confidence=_expect_float(
-            _require_key(a_raw, "min_signal_confidence", "analysis"),
-            "analysis.min_signal_confidence",
+            _require_key(a_raw, "min_signal_confidence", a_sec),
+            f"{a_sec}.min_signal_confidence",
             exclusive_min=0.0,
             max_value=1.0,
         ),
         min_risk_reward=_expect_float(
-            _require_key(a_raw, "min_risk_reward", "analysis"),
-            "analysis.min_risk_reward",
+            _require_key(a_raw, "min_risk_reward", a_sec),
+            f"{a_sec}.min_risk_reward",
             min_value=0.0,
         ),
         min_expected_move_pct=_expect_float(
-            _require_key(a_raw, "min_expected_move_pct", "analysis"),
-            "analysis.min_expected_move_pct",
+            _require_key(a_raw, "min_expected_move_pct", a_sec),
+            f"{a_sec}.min_expected_move_pct",
             min_value=0.0,
         ),
+    )
+
+    # alerts
+    alerts = _parse_alert_rules(
+        _require_key(obj, "alerts", section),
+        f"{section}.alerts",
+    )
+
+    return AssetConfig(
+        id=asset_id,
+        enabled=enabled,
+        market=market,
+        provider=provider,
+        runtime=runtime,
+        indicators=tuple(indicators),
+        features=features,
+        neural_networks=neural_networks,
+        analysis=analysis,
+        alerts=alerts,
+    )
+
+
+def load_asset_config(path: str | Path) -> AssetConfig:
+    """Load and strictly validate a standalone asset JSON configuration file."""
+    file_path = Path(path)
+    raw = _load_json_file(file_path, "Asset configuration")
+    return parse_asset_dict(raw, base_dir=file_path.parent)
+
+
+def parse_config_dict(
+    raw: dict[str, Any], *, base_dir: Path | None = None
+) -> AppConfig:
+    """Strictly parse and validate a root multi-asset TradingBot configuration dictionary."""
+    root = _expect_dict(raw, "root")
+    _reject_unknown_keys(
+        root,
+        frozenset({"storage", "web", "notifications", "assets"}),
+        "root",
+    )
+
+    # storage
+    s_raw = _expect_dict(_require_key(root, "storage", "root"), "storage")
+    _reject_unknown_keys(s_raw, frozenset({"db_path", "wal_mode", "busy_timeout_ms"}), "storage")
+    storage = StorageConfig(
+        db_path=_expect_str(_require_key(s_raw, "db_path", "storage"), "storage.db_path", allow_empty=False),
+        wal_mode=_expect_bool(s_raw.get("wal_mode", True), "storage.wal_mode"),
+        busy_timeout_ms=_expect_int(s_raw.get("busy_timeout_ms", 5000), "storage.busy_timeout_ms", min_value=0),
     )
 
     # web
@@ -789,21 +1053,36 @@ def parse_config_dict(
         title=_expect_str(w_raw.get("title", "TradingBot Dashboard"), "web.title", allow_empty=False),
     )
 
+    # notifications
+    notifications = _parse_notifications(
+        root.get("notifications", {}),
+        "notifications",
+    )
+
+    # assets
+    assets_raw = _expect_list(_require_key(root, "assets", "root"), "assets")
+    if not assets_raw:
+        raise ConfigError("'assets' must contain at least one asset configuration")
+
+    assets: list[AssetConfig] = []
+    seen_asset_ids: set[str] = set()
+    for idx, item in enumerate(assets_raw):
+        asset = parse_asset_dict(item, base_dir=base_dir, section=f"assets[{idx}]")
+        if asset.id in seen_asset_ids:
+            raise ConfigError(f"Duplicate asset id '{asset.id}' in 'assets'")
+        seen_asset_ids.add(asset.id)
+        assets.append(asset)
+
     return AppConfig(
-        market=market,
-        provider=provider,
         storage=storage,
-        runtime=runtime,
-        indicators=tuple(indicators),
-        features=features,
-        neural_networks=neural_networks,
-        analysis=analysis,
         web=web,
+        notifications=notifications,
+        assets=tuple(assets),
     )
 
 
 def load_config(path: str | Path) -> AppConfig:
-    """Load and strictly validate a TradingBot JSON configuration file."""
+    """Load and strictly validate a root TradingBot JSON configuration file."""
     file_path = Path(path)
     raw = _load_json_file(file_path, "Configuration")
     return parse_config_dict(raw, base_dir=file_path.parent)
