@@ -1,0 +1,12 @@
+{
+  "name": "synthetic",
+  "type": "synthetic",
+  "max_candles_per_request": 1000,
+  "synthetic": {
+    "seed": 42,
+    "base_price": 50000.0,
+    "volatility": 0.008,
+    "drift": 0.0001,
+    "base_volume": 120.0
+  }
+}
