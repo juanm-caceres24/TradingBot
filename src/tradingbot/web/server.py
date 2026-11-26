@@ -22,6 +22,7 @@ import mimetypes
 import queue
 import re
 import socket
+import struct
 import threading
 import urllib.parse
 from pathlib import Path
@@ -162,7 +163,11 @@ class _DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(403, {"error": "External alerts API is disabled in configuration"})
             return
 
-        accept = compute_accept_key(ws_key)
+        try:
+            accept = compute_accept_key(ws_key)
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
         handshake = (
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
@@ -225,7 +230,12 @@ class _DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
                     break
                 opcode, payload = frame_res
                 if opcode == OPCODE_CLOSE:
-                    _safe_send(encode_close(1000))
+                    close_code = (
+                        struct.unpack("!H", payload[:2])[0]
+                        if len(payload) >= 2
+                        else 1000
+                    )
+                    _safe_send(encode_close(close_code))
                     break
                 if opcode == OPCODE_PING:
                     _safe_send(encode_pong(payload))
@@ -287,12 +297,9 @@ class _DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
             summaries: list[dict[str, Any]] = []
             for asset_id, runner in orch.runners.items():
                 snap = orch.state.get(asset_id)
-                unread = len(
-                    orch.store.get_alerts(
-                        asset_id=asset_id,
-                        unacknowledged_only=True,
-                        limit=1000,
-                    )
+                unread = orch.store.count_alerts(
+                    asset_id=asset_id,
+                    unacknowledged_only=True,
                 )
                 if snap is not None:
                     summaries.append(snap.summary_dict(unread_alerts=unread))
@@ -332,13 +339,19 @@ class _DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
                 if asset_id not in orch.runners:
                     self._send_json(404, {"error": f"Unknown asset '{asset_id}'"})
                     return
+                a = orch.runners[asset_id].asset
                 self._send_json(
                     200,
                     {
-                        "asset_id": asset_id,
+                        "asset_id": a.id,
+                        "provider": a.provider.name,
+                        "symbol": a.market.symbol,
+                        "timeframe": a.market.timeframe,
+                        "mode": a.runtime.mode,
                         "candles": [],
                         "indicators": {},
-                        "indicator_plots": {},
+                        "indicator_plots": {ind.id: ind.plot for ind in a.indicators},
+                        "indicator_types": {ind.id: ind.type for ind in a.indicators},
                         "prediction": None,
                         "nn_health": {},
                         "alert_status": {},
@@ -418,12 +431,9 @@ class _DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             alert_id = int(ack_match.group(1))
             updated = orch.store.acknowledge_alert(alert_id)
-            if not updated:
-                # Check if alert exists vs already acknowledged
-                existing = [a for a in orch.store.get_alerts(limit=1000) if a.alert_id == alert_id]
-                if not existing:
-                    self._send_json(404, {"error": f"Alert {alert_id} not found"})
-                    return
+            if not updated and not orch.store.alert_exists(alert_id):
+                self._send_json(404, {"error": f"Alert {alert_id} not found"})
+                return
             self._send_json(200, {"id": alert_id, "acknowledged": True})
             return
 
@@ -439,15 +449,7 @@ class _DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(target_id, str) or target_id not in orch.runners:
                     self._send_json(404, {"error": f"Unknown asset '{target_id}'"})
                     return
-                runner = orch.runners[target_id]
-                outcome = runner.poll_once(
-                    orch._sync_service,  # noqa: SLF001
-                    orch.store,
-                    orch.state,
-                    orch._webhooks,  # noqa: SLF001
-                    orch.event_bus,
-                )
-                outcomes = [outcome]
+                outcomes = [orch.poll_asset(target_id)]
             else:
                 outcomes = orch.poll_due_assets(force_all=True)
 

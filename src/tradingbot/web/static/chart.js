@@ -38,14 +38,16 @@
   }
 
   class TradingChart {
-    constructor(canvas, onHoverCallback) {
+    constructor(canvas, onHoverCallback, onZoomCallback) {
       this.canvas = canvas;
       this.ctx = canvas.getContext("2d");
       this.onHover = onHoverCallback || function () {};
+      this.onZoom = onZoomCallback || function () {};
 
       this.candles = [];
       this.indicators = {};
       this.indicatorPlots = {};
+      this.indicatorTypes = {};
       this.hiddenIndicators = new Set();
       this.predictedCandles = [];
       this.analysis = null;
@@ -79,6 +81,7 @@
       this.candles = detail.candles || [];
       this.indicators = detail.indicators || {};
       this.indicatorPlots = detail.indicator_plots || {};
+      this.indicatorTypes = detail.indicator_types || {};
       const pred = detail.prediction || null;
       this.predictedCandles = pred && pred.predicted_candles ? pred.predicted_candles : [];
       this.analysis = pred && pred.analysis ? pred.analysis : null;
@@ -86,10 +89,15 @@
       this.render();
     }
 
-    setVisibleCount(count) {
-      this.visibleCount = Math.max(15, Math.min(250, count));
+    setVisibleCount(count, notifyZoom) {
+      const next = Math.max(15, Math.min(250, count));
+      const changed = next !== this.visibleCount;
+      this.visibleCount = next;
       this._clampPan();
       this.render();
+      if (changed && notifyZoom) {
+        this.onZoom(this.visibleCount);
+      }
     }
 
     setShowPredicted(flag) {
@@ -141,7 +149,7 @@
       this.canvas.addEventListener("wheel", (e) => {
         e.preventDefault();
         const step = e.deltaY > 0 ? 8 : -8;
-        this.setVisibleCount(this.visibleCount + step);
+        this.setVisibleCount(this.visibleCount + step, true);
       }, { passive: false });
 
       this.canvas.addEventListener("mousedown", (e) => {
@@ -339,6 +347,18 @@
         if (pc.low < minP) minP = pc.low;
         if (pc.high > maxP) maxP = pc.high;
       }
+      if (this.showPredicted && this.analysis && this.panOffset === 0) {
+        const tp = this.analysis.estimated_tp;
+        const sl = this.analysis.estimated_sl;
+        if (tp !== null && tp !== undefined && Number.isFinite(tp)) {
+          if (tp < minP) minP = tp;
+          if (tp > maxP) maxP = tp;
+        }
+        if (sl !== null && sl !== undefined && Number.isFinite(sl)) {
+          if (sl < minP) minP = sl;
+          if (sl > maxP) maxP = sl;
+        }
+      }
       // Include visible overlays in Y-axis range
       for (const [id, mode] of Object.entries(this.indicatorPlots)) {
         if (mode !== "overlay" || this.hiddenIndicators.has(id) || !this.indicators[id]) continue;
@@ -398,9 +418,13 @@
         ctx.fillText("FORECAST", divX + 6, pane.y + 13);
       }
 
-      // Estimated TP / SL Horizontal Reference Lines
-      if (this.showPredicted && this.analysis && win.predBars.length > 0) {
-        const startLineX = xCenter(Math.max(0, win.realSlice.length - 1));
+      // Estimated TP / SL Horizontal Reference Lines (works in dual, candle-only, and signal-only modes)
+      if (this.showPredicted && this.analysis && this.panOffset === 0 && win.realSlice.length > 0) {
+        const startLineX = xCenter(
+          win.predBars.length > 0
+            ? Math.max(0, win.realSlice.length - 1)
+            : Math.max(0, win.realSlice.length - Math.min(8, win.realSlice.length))
+        );
         const drawLevel = (price, color, label) => {
           if (price === null || price === undefined || !Number.isFinite(price)) return;
           if (price < minP || price > maxP) return;
@@ -584,8 +608,10 @@
       ctx.textAlign = "left";
       ctx.fillText(id.toUpperCase(), padLeft + 4, pane.y + 12);
 
+      const indType = (this.indicatorTypes[id] || "").toLowerCase();
+
       // Authentic LazyBear Squeeze Momentum renderer
-      if (cols.momentum && cols.squeeze_state) {
+      if (indType === "squeeze_momentum" || (cols.momentum && cols.squeeze_state)) {
         let maxAbs = 0;
         for (let i = win.startIdx; i < win.endIdx; i++) {
           const v = cols.momentum[i];
@@ -633,8 +659,8 @@
         return;
       }
 
-      // Generic line subchart (RSI with 70/30 guides or any custom scalar subchart)
-      const isRsi = id.toLowerCase().includes("rsi");
+      // Generic line subchart (RSI with 70/30 guides or any custom scalar subchart with min/max ticks)
+      const isRsi = indType === "rsi" || (!indType && id.toLowerCase().includes("rsi"));
       let minV = isRsi ? 0 : Infinity;
       let maxV = isRsi ? 100 : -Infinity;
       if (!isRsi) {
@@ -672,6 +698,10 @@
           ctx.fillText(String(lvl), padLeft + plotW + 6, ly + 3);
           ctx.restore();
         }
+      } else {
+        ctx.fillStyle = "#5d708f";
+        ctx.fillText(fmtPrice(maxV), padLeft + plotW + 6, pane.y + topPad + 4);
+        ctx.fillText(fmtPrice(minV), padLeft + plotW + 6, pane.y + pane.h - 4);
       }
 
       const color = this.getIndicatorColor(id);
