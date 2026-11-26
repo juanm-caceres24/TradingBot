@@ -9,7 +9,7 @@ import json
 import math
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -331,14 +331,15 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertTrue((out_db / "btc_1h_candles_schema.json").is_file())
 
             # CLI validation errors
-            self.assertEqual(
-                export_app.main([str(bot_cfg_path), "--synthetic-candles", "-5"]),
-                2,
-            )
-            self.assertEqual(
-                export_app.main([str(bot_cfg_path), "--start", "2025-02-01", "--end", "2025-01-01"]),
-                2,
-            )
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--synthetic-candles", "-5"]),
+                    2,
+                )
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--start", "2025-02-01", "--end", "2025-01-01"]),
+                    2,
+                )
 
 
 if __name__ == "__main__":

@@ -511,31 +511,42 @@ class BotOrchestrator:
     def is_stopped(self) -> bool:
         return self._stop_event.is_set()
 
+    def _initialize_locked(self, *, strict_nn_startup: bool = False) -> list[PollOutcome]:
+        outcomes: list[PollOutcome] = []
+        for asset_id, runner in self._runners.items():
+            outcome = runner.initialize(
+                self._sync_service,
+                self._store,
+                self._state,
+                self._webhooks,
+                self._event_bus,
+                strict_nn_startup=strict_nn_startup,
+            )
+            outcomes.append(outcome)
+            self._next_poll_mono[asset_id] = (
+                self._monotonic_fn() + runner.asset.runtime.poll_interval_sec
+            )
+        self._initialized = True
+        return outcomes
+
     def initialize(self, *, strict_nn_startup: bool = False) -> list[PollOutcome]:
         with self._init_lock:
-            outcomes: list[PollOutcome] = []
-            for asset_id, runner in self._runners.items():
-                outcome = runner.initialize(
-                    self._sync_service,
-                    self._store,
-                    self._state,
-                    self._webhooks,
-                    self._event_bus,
-                    strict_nn_startup=strict_nn_startup,
-                )
-                outcomes.append(outcome)
-                self._next_poll_mono[asset_id] = (
-                    self._monotonic_fn() + runner.asset.runtime.poll_interval_sec
-                )
-            self._initialized = True
-            return outcomes
+            return self._initialize_locked(strict_nn_startup=strict_nn_startup)
+
+    def _ensure_initialized(self, *, strict_nn_startup: bool = False) -> list[PollOutcome] | None:
+        """Double-checked lazy initialization so concurrent polls never initialize twice."""
+        if self._initialized:
+            return None
+        with self._init_lock:
+            if self._initialized:
+                return None
+            return self._initialize_locked(strict_nn_startup=strict_nn_startup)
 
     def poll_asset(self, asset_id: str) -> PollOutcome:
         """Thread-safe single-asset poll ensuring startup initialization completed first."""
         if asset_id not in self._runners:
             raise KeyError(f"Unknown asset '{asset_id}'")
-        if not self._initialized:
-            self.initialize()
+        self._ensure_initialized()
         runner = self._runners[asset_id]
         outcome = runner.poll_once(
             self._sync_service,
@@ -551,8 +562,9 @@ class BotOrchestrator:
 
     def poll_due_assets(self, *, force_all: bool = False) -> list[PollOutcome]:
         """Poll every asset whose poll interval has elapsed (or all if force_all=True)."""
-        if not self._initialized:
-            return self.initialize()
+        init_outcomes = self._ensure_initialized()
+        if init_outcomes is not None:
+            return init_outcomes
 
         now_mono = self._monotonic_fn()
         outcomes: list[PollOutcome] = []

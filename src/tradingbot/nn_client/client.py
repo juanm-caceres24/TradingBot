@@ -3,7 +3,7 @@
 Endpoints consumed (docs/06-inference-server-api.md):
 - GET  /health  -> {"status": "ok"}
 - GET  /info    -> {"input_size", "output_size", "num_layers", "parameters", "layers"}
-- POST /predict -> {"input": [...], "include_neurons": false}
+- POST /predict -> {"input": [...]} (plus "include_neurons": true when requested)
                    -> {"output": [...], "latency_us": ..., "layers": ...?}
 """
 
