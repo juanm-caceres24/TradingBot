@@ -35,8 +35,8 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(cfg.storage.db_path, "data/market.db")
         self.assertEqual(cfg.web.visible_candles, 70)
         self.assertTrue(cfg.notifications.api_enabled)
-        self.assertEqual(len(cfg.assets), 2)
-        self.assertEqual(len(cfg.enabled_assets), 1)
+        self.assertEqual(len(cfg.assets), 4)
+        self.assertEqual(len(cfg.enabled_assets), 3)
 
         btc_1h = cfg.get_asset("btc_1h")
         self.assertTrue(btc_1h.enabled)
@@ -49,11 +49,34 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1h.alerts.cooldown_candles, 5)
         self.assertEqual(btc_1h.alerts.actions, ("LONG", "SHORT"))
 
+        btc_4h = cfg.get_asset("btc_4h")
+        self.assertTrue(btc_4h.enabled)
+        self.assertEqual(btc_4h.market.timeframe, "4h")
+        self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8084)
+        self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8085)
+
+        btc_1d = cfg.get_asset("btc_1d")
+        self.assertTrue(btc_1d.enabled)
+        self.assertEqual(btc_1d.market.timeframe, "1d")
+        self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8086)
+        self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8087)
+
         btc_1w = cfg.get_asset("btc_1w")
         # Inline override in bot.json disabled btc_1w
         self.assertFalse(btc_1w.enabled)
         self.assertEqual(btc_1w.market.timeframe, "1w")
         self.assertFalse(btc_1w.neural_networks.candle_predictor.enabled)
+
+        # Verify all configured NN server ports across assets are distinct (zero collisions)
+        all_ports = [
+            p
+            for a in cfg.assets
+            for p in (
+                a.neural_networks.candle_predictor.port,
+                a.neural_networks.signal_classifier.port,
+            )
+        ]
+        self.assertEqual(len(all_ports), len(set(all_ports)))
 
         with self.assertRaises(KeyError):
             cfg.get_asset("nvda_1h")
