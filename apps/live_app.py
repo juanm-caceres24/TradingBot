@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Thin CLI app running continuous multi-asset live ingestion, predictions, and alerts.
+"""Thin CLI app running continuous multi-asset live ingestion, predictions, alerts, and Web UI.
 
 Examples:
-    ./scripts/live.sh configs/bot.json --headless
+    ./scripts/live.sh configs/bot.json
+    ./scripts/live.sh configs/bot.json --web-host 0.0.0.0 --web-port 8000
     ./scripts/live.sh configs/bot.json --asset btc_1h --mode live_only --headless
-    ./scripts/live.sh configs/bot.json --headless --max-cycles 3
 """
 
 from __future__ import annotations
@@ -26,12 +26,13 @@ from tradingbot.models import format_ms_to_iso  # noqa: E402
 from tradingbot.nn_client import NNClientError, SchemaMismatchError  # noqa: E402
 from tradingbot.runtime import BotOrchestrator, PollOutcome  # noqa: E402
 from tradingbot.storage import SQLiteCandleStore  # noqa: E402
+from tradingbot.web import DashboardServer  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="live_app",
-        description="Run continuous multi-asset TradingBot runtime (sync_live / live_only).",
+        description="Run continuous multi-asset TradingBot runtime with embedded 24/7 Web Dashboard & Alerts API.",
     )
     parser.add_argument(
         "config",
@@ -58,7 +59,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Run without starting the embedded Web UI server.",
+        help="Run without starting the embedded Web Dashboard & API server.",
+    )
+    parser.add_argument(
+        "--web-host",
+        default="",
+        help="Override web.host bind address (e.g. 0.0.0.0, 127.0.0.1, or Tailscale IP).",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=None,
+        help="Override web.port (0 selects an ephemeral OS port).",
     )
     parser.add_argument(
         "--strict-nn",
@@ -138,6 +150,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.max_cycles is not None and args.max_cycles < 0:
         print("Error: --max-cycles must be >= 0.", file=sys.stderr)
         return 2
+    if args.web_port is not None and not (0 <= args.web_port <= 65535):
+        print("Error: --web-port must be in 0..65535.", file=sys.stderr)
+        return 2
 
     try:
         cfg = load_config(args.config)
@@ -146,18 +161,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("No enabled assets selected. Use --asset <id> or --all-assets.")
             return 0
 
-        if not args.headless and cfg.web.enabled:
-            print(
-                f"Note: Web Dashboard server is scheduled for v0.6.0; "
-                f"running headless collector loop (configured bind {cfg.web.host}:{cfg.web.port})."
-            )
-
         with SQLiteCandleStore(
             cfg.storage.db_path,
             wal_mode=cfg.storage.wal_mode,
             busy_timeout_ms=cfg.storage.busy_timeout_ms,
         ) as store:
             orchestrator = BotOrchestrator(cfg, store, assets=selected_assets)
+            web_server: DashboardServer | None = None
+
+            if not args.headless and cfg.web.enabled:
+                bind_host = args.web_host if args.web_host else cfg.web.host
+                bind_port = args.web_port if args.web_port is not None else cfg.web.port
+                web_server = DashboardServer(
+                    orchestrator,
+                    host=bind_host,
+                    port=bind_port,
+                )
+                actual_host, actual_port = web_server.start()
+                print(
+                    f"Web Dashboard listening on http://{actual_host}:{actual_port} "
+                    f"(API: /api/assets, /api/alerts | WS: /ws/live, /ws/alerts)"
+                )
 
             def _handle_signal(_signum: int, _frame: Any) -> None:
                 print("\nShutdown signal received; stopping gracefully...")
@@ -169,7 +193,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 signal.signal(signal.SIGINT, _handle_signal)
                 signal.signal(signal.SIGTERM, _handle_signal)
             except ValueError:
-                # Signal registration only works on main thread (e.g. skipped inside threaded tests).
                 prev_sigint = None
                 prev_sigterm = None
 
@@ -183,6 +206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 print(f"TradingBot stopped cleanly after {cycles} poll cycle(s).")
             finally:
+                if web_server is not None:
+                    web_server.stop()
                 if prev_sigint is not None:
                     signal.signal(signal.SIGINT, prev_sigint)
                 if prev_sigterm is not None:

@@ -2,28 +2,22 @@
 
 A modular, transparent, zero-hardcode **Python** multi-asset market data collector, technical indicator engine, dataset generator, neural-network prediction client, alert API, and 24/7 web dashboard designed to integrate seamlessly with the C++17 **`NeuralNetwork` (`libnn` v0.6.0)** training engine and HTTP inference server.
 
-## Core Principles
+## Features (`v0.6.0`)
 
-- **Simplicity First (YAGNI):** Clean, readable Python with minimal dependencies (zero external dependencies for core storage, ingestion, indicators, feature pipeline, dataset export, NN HTTP client, alert evaluation, live runtime, and webhooks).
-- **Zero Hardcoded Parameters:** Multi-asset definitions, exchange/API presets, timeframes, indicators, feature windows, per-asset neural-network servers, alert rules, webhooks, and web bindings live strictly in external JSON files.
-- **Multi-Asset & Multi-Timeframe Native:** Track independent assets and timeframes (e.g., `btc_1h`, `btc_1w`, `nvda_1h`, `sp500_1d`) side-by-side, each with its own provider, indicator set, dedicated/shared/disabled neural networks, and alert thresholds.
-- **Modular Core + Thin Apps:** All reusable logic lives in `src/tradingbot/`; thin CLI entrypoints live in `apps/`.
-- **Living Documentation & Incremental Releases:** Specifications, architecture notes, and workflow conventions live in [`docs/`](docs/) and evolve alongside unit-tested feature branches.
-
-## Current Status (`v0.5.0`)
-
-- Strict multi-asset JSON configuration (`tradingbot.config`), canonical domain models (`tradingbot.models`), local SQLite persistence (`SQLiteCandleStore`), and gap detection (`GapDetector`).
-- JSON-driven REST provider (`GenericRestProvider` + Binance Spot preset), deterministic `SyntheticProvider`, multi-asset `SyncService`, and `apps/backfill_app.py`.
-- Extensible indicator registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, `SqueezeMomentum`), window-relative `FeaturePipeline`, `feature_schema.json`, `libnn` v0.6.0 CSV exporter, auto `nn_config.json` generator, and `apps/export_dataset_app.py`.
-- Multi-model `NeuralNetwork` v0.6.0 HTTP client (`tradingbot.nn_client`) with startup schema verification, predicted OHLC reconstruction, dual-model `TradeAnalyzer`, `PredictionEngine`, and stateful `AlertEvaluator`.
-- Continuous multi-asset runtime (`BotOrchestrator`, `RuntimeState`, `EventBus`), outbound `WebhookDispatcher`, historical `ReplayEngine` with post-hoc accuracy metrics, and thin CLI apps (`apps/live_app.py`, `apps/replay_app.py`).
+- **Zero External Dependencies (Python 3.11+ Standard Library Only):** Runs out of the box on any Linux PC, 24/7 server, or Raspberry Pi with zero `pip install`, zero Node.js build tools, and zero external CDNs.
+- **Multi-Asset & Multi-Timeframe Architecture:** Manage independent logical assets (`btc_1h`, `btc_1w`, `nvda_1h`, `sp500_1d`) via strictly validated modular JSON files (`configs/bot.json`, `configs/assets/*.json`, `configs/providers/*.json`).
+- **Local SQLite Database & Automatic Gap Healing:** Clustered `WITHOUT ROWID` SQLite storage (`data/market.db`, WAL mode) with head/internal/tail gap detection, unclosed-candle crash recovery, verified empty `sync_ranges`, prediction audit log, and cursor-based `alerts` table.
+- **Declarative REST & Deterministic Synthetic Providers:** JSON-driven `GenericRestProvider` (Binance Spot preset + generic REST/broker mapping with rate-limiting & retry backoff) and O(1) chunk-invariant `SyntheticProvider`.
+- **Extensible Indicator Engine & `NeuralNetwork` v0.6.0 Dataset Exporter:** Plugin registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, LazyBear `SqueezeMomentum`), strict warm-up exclusion, window-relative normalization, Triple Barrier labeling, `feature_schema.json` SHA-256 fingerprinting, `%.9g` CSV export, and strictly valid `nn_config.json` generation.
+- **Multi-Model `NeuralNetwork` Client, Trade Analysis & Alert Engine:** Consumes `server_app` (`/health`, `/info`, `/predict`), reconstructs translucent predicted OHLC candles, performs dual-model cross-confirmation, evaluates stateful alert rules (`consecutive_candles`, `cooldown_candles`), and dispatches outbound webhooks.
+- **Embedded 24/7 Web Dashboard & External Alerts API:** Built-in HTTP/1.1 + native RFC 6455 WebSockets (`/ws/live`, `/ws/alerts`), responsive dark UI for LAN/Tailscale access, HiDPI Canvas financial charts (sliding window, volume, overlays, RSI, 4-color Squeeze Momentum, translucent predicted candles with TP/SL lines), watchlist, and cursor-based `/api/alerts` + `/ack` API for Telegram/WhatsApp/email bots.
 
 ## Quick Start
 
 ### Requirements
-- Python 3.11+ (standard library only through `v0.5.0`)
+- Python 3.11+ (no external packages required)
 
-### Run Unit Tests
+### Run Full Test Suite
 ```bash
 ./scripts/test.sh
 ```
@@ -39,8 +33,8 @@ A modular, transparent, zero-hardcode **Python** multi-asset market data collect
 # 3) Replay historical candles against running NeuralNetwork server_app(s)
 ./scripts/replay.sh configs/bot.json --asset btc_1h --verbose
 
-# 4) Run 24/7 continuous live collector, predictions, alerts, and webhooks
-./scripts/live.sh configs/bot.json --headless
+# 4) Run 24/7 continuous live collector + Web Dashboard & Alerts API (LAN / Tailscale)
+./scripts/live.sh configs/bot.json --web-host 0.0.0.0 --web-port 8000
 ```
 
 ## Documentation
@@ -54,3 +48,4 @@ All project specifications, architecture decisions, and workflows live in [`docs
 - [`docs/04-indicators-features-and-datasets.md`](docs/04-indicators-features-and-datasets.md) — Indicator registry, warm-up rules, window-relative normalization, Triple Barrier labeling, and `NeuralNetwork` v0.6.0 dataset/config export.
 - [`docs/05-nn-client-analysis-and-alerts.md`](docs/05-nn-client-analysis-and-alerts.md) — `NeuralNetwork` HTTP client, schema verification, OHLC reconstruction, trade analysis, and stateful alert evaluation.
 - [`docs/06-runtime-replay-and-webhooks.md`](docs/06-runtime-replay-and-webhooks.md) — Continuous multi-asset orchestrator, EventBus, outbound webhooks, historical replay, and CLI apps.
+- [`docs/07-web-dashboard-and-api.md`](docs/07-web-dashboard-and-api.md) — Embedded 24/7 Web Dashboard, Canvas charting engine, REST/WebSocket API reference, LAN/Tailscale setup, and external alert bot example.
