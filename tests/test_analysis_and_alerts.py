@@ -1,0 +1,265 @@
+"""Unit and end-to-end loopback tests for candle reconstruction, TradeAnalyzer, PredictionEngine, and AlertEvaluator."""
+
+from __future__ import annotations
+
+import json
+import unittest
+from pathlib import Path
+
+from tradingbot.analysis import (
+    AlertEvaluator,
+    PredictionEngine,
+    TradeAnalyzer,
+    reconstruct_predicted_candles,
+    snapshot_to_json,
+)
+from tradingbot.config import AnalysisConfig, TripleBarrierConfig, parse_asset_dict
+from tradingbot.features import WindowContext
+from tradingbot.models import (
+    Candle,
+    PredictedCandle,
+    PredictionSnapshot,
+    SignalPrediction,
+    TradeAnalysis,
+    parse_iso_to_ms,
+)
+from tradingbot.providers import SyntheticProvider, create_provider
+from test_nn_client import _make_mock_nn_server
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
+HOUR_MS = 3_600_000
+
+
+def _anchor_candle(close: float = 100.0, open_time_ms: int = 0) -> Candle:
+    return Candle(
+        provider="binance_spot",
+        symbol="BTCUSDT",
+        timeframe="1h",
+        open_time_ms=open_time_ms,
+        close_time_ms=open_time_ms + HOUR_MS - 1,
+        open=close,
+        high=close + 1.0,
+        low=close - 1.0,
+        close=close,
+        volume=50.0,
+        is_closed=True,
+    )
+
+
+class TestReconstructionAndTradeAnalyzer(unittest.TestCase):
+    def test_reconstruct_predicted_candles_geometry_and_decay(self) -> None:
+        anchor = _anchor_candle(100.0, open_time_ms=10 * HOUR_MS)
+        ctx = WindowContext(
+            anchor_index=79,
+            anchor_candle=anchor,
+            anchor_close=100.0,
+            scale=2.0,
+            vector=[],
+        )
+        # Deliberately pass inverted high/low on step 1 to verify OHLC clamping
+        raw_out = [
+            0.0, -0.5, 1.5, 1.0,   # step 1: o=100, raw_h=99, raw_l=103, c=102 -> h=103, l=99
+            1.0, 2.0, 0.5, 1.5,    # step 2: o=102, h=104, l=101, c=103
+        ]
+        preds = reconstruct_predicted_candles(raw_out, ctx, "1h")
+        self.assertEqual(len(preds), 2)
+        self.assertEqual(preds[0].step, 1)
+        self.assertEqual(preds[0].open_time_ms, 11 * HOUR_MS)
+        self.assertAlmostEqual(preds[0].open, 100.0)
+        self.assertAlmostEqual(preds[0].high, 103.0)
+        self.assertAlmostEqual(preds[0].low, 99.0)
+        self.assertAlmostEqual(preds[0].close, 102.0)
+        self.assertGreater(preds[0].confidence, preds[1].confidence)
+
+    def test_trade_analyzer_dual_candle_only_and_signal_only_modes(self) -> None:
+        analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.60,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.01,
+            ),
+            TripleBarrierConfig(take_profit_pct=0.02, stop_loss_pct=0.01),
+        )
+        bullish_candles = (
+            PredictedCandle(1, HOUR_MS, 100.0, 101.5, 99.5, 101.0, 0.9),
+            PredictedCandle(2, 2 * HOUR_MS, 101.0, 103.0, 100.5, 102.5, 0.8),
+        )
+        long_sig = SignalPrediction(hold_prob=0.15, long_prob=0.75, short_prob=0.10)
+        short_sig = SignalPrediction(hold_prob=0.15, long_prob=0.10, short_prob=0.75)
+
+        # Dual cross-confirmed LONG (tp=103, sl=99.5 -> reward=3, risk=0.5 -> RR=6.0)
+        res_dual = analyzer.analyze(100.0, predicted_candles=bullish_candles, signal=long_sig)
+        self.assertEqual(res_dual.action, "LONG")
+        self.assertAlmostEqual(res_dual.confidence, 0.75)
+        self.assertGreaterEqual(res_dual.risk_reward or 0.0, 5.0)
+        self.assertIn("Cross-confirmed LONG", res_dual.reason)
+
+        # Conflicting signal (SHORT) vs bullish candles -> downgraded to HOLD
+        res_conflict = analyzer.analyze(100.0, predicted_candles=bullish_candles, signal=short_sig)
+        self.assertEqual(res_conflict.action, "HOLD")
+        self.assertIn("Conflicting models", res_conflict.reason)
+
+        # Candle-only bullish -> LONG with heuristic confidence
+        res_candle_only = analyzer.analyze(100.0, predicted_candles=bullish_candles, signal=None)
+        self.assertEqual(res_candle_only.action, "LONG")
+        self.assertGreater(res_candle_only.confidence, 0.7)
+
+        # Signal-only LONG -> uses Triple Barrier TP/SL (RR = 0.02 / 0.01 = 2.0 >= 1.5)
+        res_sig_only = analyzer.analyze(100.0, predicted_candles=(), signal=long_sig)
+        self.assertEqual(res_sig_only.action, "LONG")
+        self.assertAlmostEqual(res_sig_only.estimated_tp or 0.0, 102.0)
+        self.assertAlmostEqual(res_sig_only.estimated_sl or 0.0, 99.0)
+        self.assertAlmostEqual(res_sig_only.risk_reward or 0.0, 2.0)
+
+        # No models -> neutral HOLD
+        res_none = analyzer.analyze(100.0)
+        self.assertEqual(res_none.action, "HOLD")
+
+
+class TestAlertEvaluator(unittest.TestCase):
+    def _make_snapshot(
+        self,
+        bar_idx: int,
+        action: str,
+        confidence: float = 0.80,
+        move_pct: float = 0.02,
+        rr: float = 2.0,
+    ) -> PredictionSnapshot:
+        return PredictionSnapshot(
+            asset_id="btc_1h",
+            provider="binance_spot",
+            symbol="BTCUSDT",
+            timeframe="1h",
+            anchor_open_time_ms=bar_idx * HOUR_MS,
+            created_at_ms=bar_idx * HOUR_MS + 100,
+            analysis=TradeAnalysis(
+                action=action,
+                expected_move_pct=move_pct if action == "LONG" else (-move_pct if action == "SHORT" else 0.0),
+                estimated_tp=102.0 if action != "HOLD" else None,
+                estimated_sl=99.0 if action != "HOLD" else None,
+                risk_reward=rr if action != "HOLD" else None,
+                confidence=confidence,
+                reason="test",
+            ),
+        )
+
+    def test_consecutive_candles_cooldown_and_idempotency(self) -> None:
+        raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        raw["alerts"] = {
+            "enabled": True,
+            "actions": ["LONG", "SHORT"],
+            "min_confidence": 0.70,
+            "min_risk_reward": 1.5,
+            "min_expected_move_pct": 0.005,
+            "consecutive_candles": 2,
+            "cooldown_candles": 3,
+        }
+        asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
+        evaluator = AlertEvaluator(asset, clock_ms=lambda: 999_999)
+
+        # Bar 1: LONG #1 (streak 1/2 -> no alert)
+        self.assertIsNone(evaluator.evaluate(self._make_snapshot(1, "LONG")))
+        # Duplicate poll of Bar 1 -> ignored cleanly (streak stays 1/2)
+        self.assertIsNone(evaluator.evaluate(self._make_snapshot(1, "LONG")))
+        self.assertEqual(evaluator.status_dict()["streak_count"], 1)
+
+        # Bar 2: LONG #2 (streak 2/2 -> FIRES alert!)
+        ev1 = evaluator.evaluate(self._make_snapshot(2, "LONG"))
+        self.assertIsNotNone(ev1)
+        assert ev1 is not None
+        self.assertEqual(ev1.action, "LONG")
+        self.assertEqual(ev1.consecutive_hits, 2)
+        self.assertEqual(ev1.rule_name, "consecutive_2_bars")
+
+        # Bars 3, 4: still in cooldown (candles_since_alert = 1, 2 < 3 -> suppressed)
+        self.assertIsNone(evaluator.evaluate(self._make_snapshot(3, "LONG")))
+        self.assertIsNone(evaluator.evaluate(self._make_snapshot(4, "LONG")))
+
+        # Bar 5: cooldown satisfied (3 >= 3), streak continues -> FIRES second alert
+        ev2 = evaluator.evaluate(self._make_snapshot(5, "LONG"))
+        self.assertIsNotNone(ev2)
+        assert ev2 is not None
+        self.assertEqual(ev2.consecutive_hits, 5)
+
+        # Bar 6: HOLD resets streak to 0
+        self.assertIsNone(evaluator.evaluate(self._make_snapshot(6, "HOLD")))
+        self.assertEqual(evaluator.status_dict()["streak_count"], 0)
+
+        # Bar 7..9: flip to SHORT (streak 1 at bar 7, streak 2 at bar 8 -> cooldown 3/3 at bar 8 -> FIRES SHORT!)
+        self.assertIsNone(evaluator.evaluate(self._make_snapshot(7, "SHORT")))
+        ev3 = evaluator.evaluate(self._make_snapshot(8, "SHORT"))
+        self.assertIsNotNone(ev3)
+        assert ev3 is not None
+        self.assertEqual(ev3.action, "SHORT")
+        self.assertEqual(ev3.consecutive_hits, 2)
+
+
+class TestEndToEndPredictionEngine(unittest.TestCase):
+    def test_prediction_engine_with_dual_mock_nn_servers_and_alerts(self) -> None:
+        # 7 bullish relative OHLC candles (rising +0.3 .. +2.1 ATR above anchor_close)
+        bullish_rel: list[float] = []
+        for step in range(1, 8):
+            base = 0.25 * step
+            bullish_rel.extend([base - 0.05, base + 0.30, base - 0.15, base + 0.10])
+
+        srv_c, th_c, port_c = _make_mock_nn_server(341, bullish_rel, latency_us=12)
+        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.10, 0.80, 0.10], latency_us=8)
+
+        try:
+            raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+            raw["provider"] = {"preset_path": "../providers/synthetic.json"}
+            raw["neural_networks"]["verify_schema_on_start"] = True
+            raw["neural_networks"]["candle_predictor"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port_c,
+                "schema_path": "",
+            }
+            raw["neural_networks"]["signal_classifier"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port_s,
+                "schema_path": "",
+            }
+            raw["alerts"]["consecutive_candles"] = 2
+            asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
+
+            start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
+            end_ms = start_ms + 90 * HOUR_MS
+            provider = create_provider(asset.provider, clock_ms=lambda: end_ms + HOUR_MS)
+            assert isinstance(provider, SyntheticProvider)
+            candles = provider.fetch_candles("BTCUSDT", "1h", start_ms=start_ms, end_ms=end_ms, limit=90)
+
+            engine = PredictionEngine(asset, clock_ms=lambda: end_ms)
+            infos = engine.verify_models()
+            self.assertEqual(set(infos.keys()), {"candle_predictor", "signal_classifier"})
+
+            evaluator = AlertEvaluator(asset, clock_ms=lambda: end_ms)
+            snap1 = engine.predict(candles[:-1])
+            self.assertEqual(len(snap1.predicted_candles), 7)
+            assert snap1.analysis is not None
+            self.assertEqual(snap1.analysis.action, "LONG")
+            self.assertIsNone(evaluator.evaluate(snap1))
+
+            snap2 = engine.predict(candles)
+            alert = evaluator.evaluate(snap2)
+            self.assertIsNotNone(alert)
+            assert alert is not None
+            self.assertEqual(alert.action, "LONG")
+            self.assertEqual(alert.consecutive_hits, 2)
+
+            # Verify JSON serialization works cleanly
+            encoded = json.loads(snapshot_to_json(snap2))
+            self.assertEqual(encoded["asset_id"], "btc_1h")
+            self.assertEqual(len(encoded["predicted_candles"]), 7)
+            self.assertEqual(encoded["analysis"]["action"], "LONG")
+        finally:
+            for srv, th in ((srv_c, th_c), (srv_s, th_s)):
+                srv.shutdown()
+                srv.server_close()
+                th.join(timeout=2.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

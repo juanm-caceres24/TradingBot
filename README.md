@@ -10,17 +10,17 @@ A modular, transparent, zero-hardcode **Python** multi-asset market data collect
 - **Modular Core + Thin Apps:** All reusable logic lives in `src/tradingbot/`; thin CLI entrypoints live in `apps/`.
 - **Living Documentation & Incremental Releases:** Specifications, architecture notes, and workflow conventions live in [`docs/`](docs/) and evolve alongside unit-tested feature branches.
 
-## Current Status (`v0.3.0`)
+## Current Status (`v0.4.0`)
 
 - Strict multi-asset JSON configuration (`tradingbot.config`), canonical domain models (`tradingbot.models`), local SQLite persistence (`SQLiteCandleStore`), and gap detection (`GapDetector`).
 - JSON-driven REST provider (`GenericRestProvider` + Binance Spot preset), deterministic `SyntheticProvider`, multi-asset `SyncService`, and `apps/backfill_app.py`.
-- Extensible indicator registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, `SqueezeMomentum`) with strict warm-up exclusion (`tradingbot.indicators`).
-- Window-relative feature normalization (`atr_relative` / `pct_relative`), `feature_schema.json` integrity fingerprinting, Triple Barrier labeling, `libnn` v0.6.0 CSV exporter, automatic `nn_config.json` generator, and `apps/export_dataset_app.py` (supporting both SQLite history and offline synthetic test datasets).
+- Extensible indicator registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, `SqueezeMomentum`), window-relative `FeaturePipeline`, `feature_schema.json`, `libnn` v0.6.0 CSV exporter, auto `nn_config.json` generator, and `apps/export_dataset_app.py`.
+- Multi-model `NeuralNetwork` v0.6.0 HTTP client (`tradingbot.nn_client`) with startup schema verification, predicted OHLC reconstruction, dual-model `TradeAnalyzer`, `PredictionEngine`, and stateful `AlertEvaluator` (`consecutive_candles` + `cooldown_candles`).
 
 ## Quick Start
 
 ### Requirements
-- Python 3.11+ (standard library only through `v0.3.0`)
+- Python 3.11+ (standard library only through `v0.4.0`)
 
 ### Run Unit Tests
 ```bash
@@ -48,3 +48,4 @@ All project specifications, architecture decisions, and workflows live in [`docs
 - [`docs/02-storage-and-gap-detection.md`](docs/02-storage-and-gap-detection.md) — SQLite schema (`candles`, `sync_ranges`, `predictions`, `alerts`), `WITHOUT ROWID` indexing, half-open time ranges, and gap detection algorithm.
 - [`docs/03-providers-and-backfill.md`](docs/03-providers-and-backfill.md) — Declarative JSON REST provider, deterministic synthetic generator, `SyncService`, and `backfill_app.py` usage.
 - [`docs/04-indicators-features-and-datasets.md`](docs/04-indicators-features-and-datasets.md) — Indicator registry, warm-up rules, window-relative normalization, Triple Barrier labeling, and `NeuralNetwork` v0.6.0 dataset/config export.
+- [`docs/05-nn-client-analysis-and-alerts.md`](docs/05-nn-client-analysis-and-alerts.md) — `NeuralNetwork` HTTP client, schema verification, OHLC reconstruction, trade analysis, and stateful alert evaluation.
