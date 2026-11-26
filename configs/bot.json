@@ -4,6 +4,11 @@
     "wal_mode": true,
     "busy_timeout_ms": 5000
   },
+  "export": {
+    "output_dir": "data/exports",
+    "dataset_path_prefix": "data",
+    "model_save_dir": "models"
+  },
   "web": {
     "enabled": true,
     "host": "0.0.0.0",

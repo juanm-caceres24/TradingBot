@@ -60,8 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-dir",
-        default="data/exports",
-        help="Output directory for exported CSVs, schemas, and nn_config.json files (default: data/exports).",
+        default=None,
+        help="Override export.output_dir from config (default from config: data/exports).",
+    )
+    parser.add_argument(
+        "--dataset-path-prefix",
+        default=None,
+        help="Override export.dataset_path_prefix for nn_config training.dataset_path (empty string uses absolute CSV path).",
+    )
+    parser.add_argument(
+        "--model-save-dir",
+        default=None,
+        help="Override export.model_save_dir for nn_config model.save_path (default from config: models).",
     )
     parser.add_argument(
         "--update-asset-schema",
@@ -271,12 +281,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if args.update_asset_schema and endpoint.schema_path
                         else None
                     )
+                    effective_out_dir = args.output_dir if args.output_dir is not None else cfg.export.output_dir
+                    effective_dataset_prefix = (
+                        args.dataset_path_prefix
+                        if args.dataset_path_prefix is not None
+                        else cfg.export.dataset_path_prefix
+                    )
+                    effective_model_save_dir = (
+                        args.model_save_dir
+                        if args.model_save_dir is not None
+                        else cfg.export.model_save_dir
+                    )
                     summary = export_dataset(
                         asset,
                         candles,
                         model_kind=kind,
-                        output_dir=args.output_dir,
+                        output_dir=effective_out_dir,
                         schema_path=schema_out,
+                        dataset_path_prefix=effective_dataset_prefix,
+                        model_save_dir=effective_model_save_dir,
                         training_options=options,
                     )
                     print(
