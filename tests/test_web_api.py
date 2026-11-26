@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
+import io
 import json
 import os
 import socket
 import struct
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -237,6 +241,21 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
                     code, after_cursor = _http_json(f"{base}/api/alerts?since_id=1")
                     self.assertEqual(code, 200)
                     self.assertEqual(after_cursor["count"], 0)
+
+                    # 6) Static Web Dashboard files & path-traversal protection
+                    for path, expected_mime in (
+                        ("/", "text/html"),
+                        ("/static/styles.css", "text/css"),
+                        ("/static/chart.js", "application/javascript"),
+                        ("/static/app.js", "application/javascript"),
+                    ):
+                        with urllib.request.urlopen(f"{base}{path}", timeout=3.0) as resp:
+                            self.assertEqual(resp.status, 200)
+                            self.assertIn(expected_mime, resp.headers.get("Content-Type", ""))
+                            self.assertGreater(len(resp.read()), 100)
+
+                    code_trav, _ = _http_json(f"{base}/static/../server.py")
+                    self.assertEqual(code_trav, 404)
                 finally:
                     web.stop()
         finally:
@@ -244,6 +263,58 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
                 srv.shutdown()
                 srv.server_close()
                 th.join(timeout=2.0)
+
+    def test_live_app_starts_and_stops_embedded_web_dashboard(self) -> None:
+        live_path = ROOT_DIR / "apps" / "live_app.py"
+        spec = importlib.util.spec_from_file_location("live_app_web_test", live_path)
+        assert spec is not None and spec.loader is not None
+        live_app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(live_app)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            asset_raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+            asset_raw["provider"] = {
+                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+            }
+            asset_raw["runtime"]["poll_interval_sec"] = 0.05
+            asset_raw["neural_networks"]["candle_predictor"]["enabled"] = False
+            asset_raw["neural_networks"]["signal_classifier"]["enabled"] = False
+            asset_file = tmp_path / "btc_1h.json"
+            asset_file.write_text(json.dumps(asset_raw), encoding="utf-8")
+
+            bot_cfg_path = tmp_path / "bot.json"
+            bot_cfg_path.write_text(
+                json.dumps(
+                    {
+                        "storage": {"db_path": str(tmp_path / "m.db"), "wal_mode": True, "busy_timeout_ms": 5000},
+                        "web": {"enabled": True, "host": "127.0.0.1", "port": 0, "visible_candles": 70},
+                        "notifications": {"api_enabled": True, "webhooks": []},
+                        "assets": [{"config_path": str(asset_file)}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = live_app.main(
+                    [
+                        str(bot_cfg_path),
+                        "--mode",
+                        "live_only",
+                        "--web-host",
+                        "127.0.0.1",
+                        "--web-port",
+                        "0",
+                        "--max-cycles",
+                        "1",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("Web Dashboard listening on http://127.0.0.1:", out)
+            self.assertIn("stopped cleanly after 1 poll cycle(s)", out)
 
 
 if __name__ == "__main__":

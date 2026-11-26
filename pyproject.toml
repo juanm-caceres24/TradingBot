@@ -4,17 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tradingbot"
-version = "0.5.0"
-description = "Modular multi-asset market data collector, indicator engine, neural-network forecasting client, alert API, and 24/7 web dashboard."
+version = "0.6.0"
+description = "Zero-dependency multi-asset market data collector, indicator engine, neural-network forecasting client, alert API, and 24/7 web dashboard."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-web = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-]
 dev = [
     "pytest>=8.0.0",
 ]
