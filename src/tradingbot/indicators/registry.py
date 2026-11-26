@@ -30,8 +30,8 @@ def register_indicator(name: str, cls: type[BaseIndicator]) -> None:
     """Register a custom indicator class under a unique type name."""
     if not isinstance(name, str) or not name.strip():
         raise IndicatorError("Indicator type name must be a non-empty string")
-    if not issubclass(cls, BaseIndicator):
-        raise IndicatorError("Indicator class must inherit from BaseIndicator")
+    if not isinstance(cls, type) or not issubclass(cls, BaseIndicator):
+        raise IndicatorError("Indicator class must be a subclass of BaseIndicator")
     INDICATOR_REGISTRY[name.strip().lower()] = cls
 
 

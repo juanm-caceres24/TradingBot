@@ -69,7 +69,7 @@ class SyntheticProvider(BaseProvider):
         vol = self._params.volatility
         drift = self._params.drift
 
-        ref_index = _REFERENCE_EPOCH_MS // tf.interval_ms
+        ref_index = (_REFERENCE_EPOCH_MS - tf.anchor_offset_ms) // tf.interval_ms
         rel_k = index - ref_index
 
         # Deterministic per-series phase offsets so distinct symbols/timeframes differ.
@@ -90,7 +90,7 @@ class SyntheticProvider(BaseProvider):
         return max(1e-4, self._params.base_price * math.exp(log_ret))
 
     def _build_candle(self, symbol: str, tf: Timeframe, open_time_ms: int, now_ms: int) -> Candle:
-        idx = open_time_ms // tf.interval_ms
+        idx = (open_time_ms - tf.anchor_offset_ms) // tf.interval_ms
         series_key = f"{symbol}:{tf.label}"
         seed = self._params.seed
         vol = max(self._params.volatility, 1e-4)

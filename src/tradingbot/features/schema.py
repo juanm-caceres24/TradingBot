@@ -139,30 +139,72 @@ def load_feature_schema(path: str | Path) -> FeatureSchema:
     missing = sorted(required - set(raw.keys()))
     if missing:
         raise SchemaError(f"Feature schema missing required keys: {', '.join(missing)}")
-    if raw["schema_version"] != SCHEMA_VERSION:
+    version_val = raw["schema_version"]
+    if isinstance(version_val, bool) or version_val != SCHEMA_VERSION:
         raise SchemaError(
-            f"Unsupported feature schema_version {raw['schema_version']!r} (expected {SCHEMA_VERSION})"
+            f"Unsupported feature schema_version {version_val!r} (expected {SCHEMA_VERSION})"
         )
     if raw["model_kind"] not in ("candles", "signal"):
         raise SchemaError(f"Invalid model_kind {raw['model_kind']!r}")
 
-    return FeatureSchema(
-        schema_version=int(raw["schema_version"]),
-        asset_id=str(raw["asset_id"]),
-        provider=str(raw["provider"]),
-        symbol=str(raw["symbol"]),
-        timeframe=str(raw["timeframe"]),
-        model_kind=str(raw["model_kind"]),
-        input_window=int(raw["input_window"]),
-        forecast_horizon=int(raw["forecast_horizon"]),
-        normalization=str(raw["normalization"]),
-        atr_period=int(raw["atr_period"]),
-        max_warmup=int(raw["max_warmup"]),
-        input_size=int(raw["input_size"]),
-        output_size=int(raw["output_size"]),
-        per_bar_features=tuple(str(x) for x in raw["per_bar_features"]),
-        target_columns=tuple(str(x) for x in raw["target_columns"]),
-        indicators=tuple(dict(ind) for ind in raw["indicators"]),
-        triple_barrier=dict(raw["triple_barrier"]) if raw["triple_barrier"] is not None else None,
-        feature_hash=str(raw["feature_hash"]),
+    try:
+        for int_key in ("input_window", "forecast_horizon", "atr_period", "max_warmup", "input_size", "output_size"):
+            if isinstance(raw[int_key], bool) or not isinstance(raw[int_key], int):
+                raise SchemaError(f"Feature schema '{int_key}' must be an integer")
+        if not isinstance(raw["per_bar_features"], list) or not isinstance(raw["target_columns"], list):
+            raise SchemaError("Feature schema 'per_bar_features' and 'target_columns' must be lists")
+        if not isinstance(raw["indicators"], list):
+            raise SchemaError("Feature schema 'indicators' must be a list")
+        if raw["triple_barrier"] is not None and not isinstance(raw["triple_barrier"], dict):
+            raise SchemaError("Feature schema 'triple_barrier' must be a dict or null")
+
+        per_bar = tuple(str(x) for x in raw["per_bar_features"])
+        targets = tuple(str(x) for x in raw["target_columns"])
+        indicators = tuple(dict(ind) for ind in raw["indicators"])
+        tb = (
+            {str(k): float(v) for k, v in raw["triple_barrier"].items()}
+            if raw["triple_barrier"] is not None
+            else None
+        )
+        schema = FeatureSchema(
+            schema_version=int(version_val),
+            asset_id=str(raw["asset_id"]),
+            provider=str(raw["provider"]),
+            symbol=str(raw["symbol"]),
+            timeframe=str(raw["timeframe"]),
+            model_kind=str(raw["model_kind"]),
+            input_window=int(raw["input_window"]),
+            forecast_horizon=int(raw["forecast_horizon"]),
+            normalization=str(raw["normalization"]),
+            atr_period=int(raw["atr_period"]),
+            max_warmup=int(raw["max_warmup"]),
+            input_size=int(raw["input_size"]),
+            output_size=int(raw["output_size"]),
+            per_bar_features=per_bar,
+            target_columns=targets,
+            indicators=indicators,
+            triple_barrier=tb,
+            feature_hash=str(raw["feature_hash"]),
+        )
+    except SchemaError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise SchemaError(f"Malformed fields in feature schema '{file_path}': {exc}") from exc
+
+    expected_hash = compute_feature_hash(
+        model_kind=schema.model_kind,
+        input_window=schema.input_window,
+        forecast_horizon=schema.forecast_horizon,
+        normalization=schema.normalization,
+        atr_period=schema.atr_period,
+        per_bar_features=schema.per_bar_features,
+        target_columns=schema.target_columns,
+        indicators=schema.indicators,
+        triple_barrier=schema.triple_barrier,
     )
+    if schema.feature_hash != expected_hash:
+        raise SchemaError(
+            f"Feature schema '{file_path}' failed integrity check: "
+            f"stored feature_hash {schema.feature_hash[:12]} != computed {expected_hash[:12]}"
+        )
+    return schema

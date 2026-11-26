@@ -88,7 +88,7 @@ def _select_assets(
     if requested_ids:
         by_id = {a.id: a for a in all_assets}
         selected: list[AssetConfig] = []
-        for asset_id in requested_ids:
+        for asset_id in dict.fromkeys(requested_ids):
             if asset_id not in by_id:
                 available = ", ".join(sorted(by_id.keys()))
                 raise ConfigError(

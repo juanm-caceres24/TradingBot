@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -54,7 +56,7 @@ class SyncService:
         self._providers: dict[str, BaseProvider] = {}
 
     def get_provider(self, config: ProviderConfig) -> BaseProvider:
-        key = f"{config.type}:{config.name}:{config.base_url}:{config.endpoint}"
+        key = json.dumps(dataclasses.asdict(config), sort_keys=True, separators=(",", ":"))
         provider = self._providers.get(key)
         if provider is None:
             provider = self._provider_factory(

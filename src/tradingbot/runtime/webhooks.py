@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import tradingbot
 from tradingbot.config import WebhookConfig
 from tradingbot.models import AlertEvent
 
@@ -55,7 +56,7 @@ class WebhookDispatcher:
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "User-Agent": "TradingBot/0.5.0",
+                "User-Agent": f"TradingBot/{tradingbot.__version__}",
             }
             headers.update(wh.headers)
 

@@ -34,12 +34,16 @@ _VALID_RESPONSE_FORMATS = frozenset({"array_of_arrays", "array_of_objects"})
 _VALID_TIMESTAMP_UNITS = frozenset({"ms", "s"})
 _VALID_ORDERS = frozenset({"asc", "desc"})
 _VALID_RUNTIME_MODES = frozenset({"sync_live", "backfill", "live_only", "replay"})
-_VALID_INDICATOR_TYPES = frozenset(
-    {"sma", "ema", "rsi", "atr", "bollinger", "squeeze_momentum"}
-)
 _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
 _VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
+
+
+def _valid_indicator_types() -> frozenset[str]:
+    """Resolve indicator types dynamically from INDICATOR_REGISTRY so custom plugins work via JSON."""
+    from tradingbot.indicators.registry import INDICATOR_REGISTRY
+
+    return frozenset(INDICATOR_REGISTRY.keys())
 
 
 def _reject_unknown_keys(
@@ -100,6 +104,7 @@ def _expect_float(
     min_value: float | None = None,
     max_value: float | None = None,
     exclusive_min: float | None = None,
+    exclusive_max: float | None = None,
 ) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"'{path}' must be a number, got {type(value).__name__}")
@@ -112,6 +117,8 @@ def _expect_float(
         raise ConfigError(f"'{path}' must be > {exclusive_min}, got {result}")
     if max_value is not None and result > max_value:
         raise ConfigError(f"'{path}' must be <= {max_value}, got {result}")
+    if exclusive_max is not None and result >= exclusive_max:
+        raise ConfigError(f"'{path}' must be < {exclusive_max}, got {result}")
     return result
 
 
@@ -854,6 +861,7 @@ def parse_asset_dict(
 
     # indicators
     ind_list_raw = _expect_list(_require_key(obj, "indicators", section), f"{section}.indicators")
+    valid_ind_types = _valid_indicator_types()
     indicators: list[IndicatorConfig] = []
     seen_ids: set[str] = set()
     for idx, item in enumerate(ind_list_raw):
@@ -865,7 +873,7 @@ def parse_asset_dict(
             raise ConfigError(f"Duplicate indicator id '{ind_id}' in '{section}.indicators'")
         seen_ids.add(ind_id)
         ind_type = _expect_enum(
-            _require_key(item_obj, "type", sec), f"{sec}.type", _VALID_INDICATOR_TYPES
+            _require_key(item_obj, "type", sec), f"{sec}.type", valid_ind_types
         )
         ind_params = _expect_dict(item_obj.get("params", {}), f"{sec}.params")
         indicators.append(
@@ -903,11 +911,13 @@ def parse_asset_dict(
             _require_key(tb_raw, "take_profit_pct", tb_sec),
             f"{tb_sec}.take_profit_pct",
             exclusive_min=0.0,
+            exclusive_max=1.0,
         ),
         stop_loss_pct=_expect_float(
             _require_key(tb_raw, "stop_loss_pct", tb_sec),
             f"{tb_sec}.stop_loss_pct",
             exclusive_min=0.0,
+            exclusive_max=1.0,
         ),
     )
     features = FeaturesConfig(

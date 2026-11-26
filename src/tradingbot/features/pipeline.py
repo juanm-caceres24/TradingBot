@@ -221,6 +221,11 @@ class FeaturePipeline:
             scale = anchor_close
 
         window_candles = candles[start_idx : anchor_index + 1]
+        if self._asset.market.market_schedule == "24/7":
+            interval_ms = self._asset.market.parsed_timeframe.interval_ms
+            for prev_c, curr_c in zip(window_candles, window_candles[1:]):
+                if curr_c.open_time_ms - prev_c.open_time_ms != interval_ms:
+                    return None
         vol_mean = sum(c.volume for c in window_candles) / float(w)
         vol_denom = max(vol_mean, 1e-9)
 
@@ -365,8 +370,19 @@ class FeaturePipeline:
         first_anchor = self.max_warmup + self._features_cfg.input_window - 1
         last_anchor_exclusive = n - self._features_cfg.forecast_horizon
         stride = self._features_cfg.stride
+        enforce_contiguous = self._asset.market.market_schedule == "24/7"
+        interval_ms = self._asset.market.parsed_timeframe.interval_ms
+        horizon = self._features_cfg.forecast_horizon
 
         for anchor_idx in range(first_anchor, last_anchor_exclusive, stride):
+            if enforce_contiguous:
+                anchor_ts = candles[anchor_idx].open_time_ms
+                if any(
+                    candles[anchor_idx + step].open_time_ms != anchor_ts + step * interval_ms
+                    for step in range(1, horizon + 1)
+                ):
+                    continue
+
             ctx = self.build_input_window(
                 candles,
                 anchor_idx,
