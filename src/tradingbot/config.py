@@ -1,7 +1,7 @@
 """Strict external JSON configuration loader and validator for TradingBot.
 
 Supports multi-asset, multi-timeframe configurations where each logical asset
-(e.g. 'btc_1h', 'btc_1w', 'nvda_1h') owns its own provider, indicator set,
+(e.g. 'btc_1h', 'btc_4h', 'btc_1d', 'nvda_1h') owns its own provider, indicator set,
 feature pipeline, dedicated/shared/disabled neural-network endpoints, and
 alerting rules, while sharing a single SQLite database, web dashboard, and
 outbound notification layer.

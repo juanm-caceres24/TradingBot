@@ -28,7 +28,7 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 ## 3. Functional Requirements
 
 ### 3.1 Multi-Asset & Multi-Timeframe Management
-- Track an arbitrary, config-driven list of logical **assets** (identified by unique URL-safe `asset_id`, combining symbol and timeframe — e.g., `btc_1h`, `btc_1w`, `sp500_1h`, `nvda_1h`).
+- Track an arbitrary, config-driven list of logical **assets** (identified by unique URL-safe `asset_id`, combining symbol and timeframe — e.g., `btc_1h`, `btc_4h`, `btc_1d`, `sp500_1h`, `nvda_1h`).
 - Each asset lives in its own modular JSON file under `configs/assets/` (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
   - Its market (`symbol`, `timeframe`, `market_schedule`: `"24/7"` enforces strict `interval_ms` contiguity in sliding windows, replay horizon checks, and consecutive alert streaks; `"sessions"` allows weekend/holiday timestamp gaps cleanly).
   - Its data provider preset (e.g., `binance_spot` for crypto, another REST preset for equities/indices, or `synthetic` for offline tests).
@@ -67,7 +67,7 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
   1. **Candle Predictor (`MSE` + `Linear`):** Input = $W$ normalized candles + indicators; Output = $H \times 4$ relative OHLC values used to reconstruct translucent predicted candles and projected TP/SL zones.
   2. **Signal Classifier (`CCE` + `Softmax`, optional/parallel):** Input = identical normalized feature vector; Output = 3 mutually exclusive probabilities `[HOLD, LONG, SHORT]` trained via Triple Barrier Labeling over the next $H$ candles (leveraging `libnn` v0.6.0's numerically stable fused `Softmax + CCE` backward path).
   3. **Extensible `extra_models` map:** Supports plugging additional specialized `server_app` models per asset via JSON; `PredictionEngine` and `ReplayEngine` query enabled extra models and expose their raw output vectors in `PredictionSnapshot.extra_outputs` and JSON API responses while `candle_predictor` and `signal_classifier` drive `TradeAnalysis`.
-  - Because each logical asset (`btc_1h`, `btc_1w`, `nvda_1h`) configures its own endpoints independently, an asset can run dedicated trained models on its own ports, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., `btc_1w` for macro charting only).
+  - Because each logical asset (`btc_1h`, `btc_4h`, `btc_1d`, `nvda_1h`) configures its own endpoints independently, an asset can run dedicated trained models on its own ports, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., for charting-only assets).
 - **Exact `NeuralNetwork` v0.6.0 interoperability:**
   - Export `libnn`-compatible CSV files per asset (`input_cols + target_cols` numeric columns formatted with `%.9g`).
   - Auto-generate strictly valid `nn_config.json` files per asset/model (exact `input_size`, `output_size`, `Adam`, `validation_split`, **`validation_shuffle: false`** chronological split, **`keep_best_validation_model: true`**, pre-populated with the asset's configured `server.host` and `server.port` — zero unknown keys).
@@ -160,8 +160,7 @@ TradingBot/
 │   ├── assets/                          # Per-asset / per-timeframe profiles
 │   │   ├── btc_1h.json
 │   │   ├── btc_4h.json
-│   │   ├── btc_1d.json
-│   │   └── btc_1w.json
+│   │   └── btc_1d.json
 │   └── providers/                       # Declarative exchange/synthetic presets
 │       ├── binance_spot.json
 │       └── synthetic.json
