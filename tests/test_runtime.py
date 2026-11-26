@@ -266,7 +266,7 @@ class TestBotOrchestrator(unittest.TestCase):
         bus.publish({"type": "pong"})
         self.assertEqual(seen, ["ping"])
 
-        # Webhook with missing auth env var and unreachable port returns structured failure
+        # Separate webhooks exercise both missing auth env var and unreachable socket branches
         os.environ.pop("MISSING_WH_ENV_TOKEN", None)
         alert = AlertEvent(
             alert_id=1,
@@ -285,18 +285,29 @@ class TestBotOrchestrator(unittest.TestCase):
         dispatcher = WebhookDispatcher(
             [
                 WebhookConfig(
-                    name="dead_hook",
-                    url="http://127.0.0.1:1/unreachable",
+                    name="missing_env_hook",
+                    url="http://127.0.0.1:1/never_called",
                     enabled=True,
                     timeout_sec=0.5,
                     auth_token_env="MISSING_WH_ENV_TOKEN",
-                )
+                ),
+                WebhookConfig(
+                    name="unreachable_hook",
+                    url="http://127.0.0.1:1/unreachable",
+                    enabled=True,
+                    timeout_sec=0.5,
+                ),
             ]
         )
         results = dispatcher.dispatch(alert)
-        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results), 2)
         self.assertFalse(results[0].success)
         self.assertIsNone(results[0].status_code)
+        self.assertIn("not set", results[0].error or "")
+        self.assertFalse(results[1].success)
+        self.assertIsNone(results[1].status_code)
+        self.assertTrue(bool(results[1].error))
+        self.assertNotIn("not set", results[1].error or "")
 
     def test_runtime_hardening_gap_error_non_persist_open_candle_restart_and_empty_loop(self) -> None:
         srv_s, th_s, port_s = _make_mock_nn_server(341, [0.05, 0.85, 0.10], latency_us=5)
@@ -461,6 +472,39 @@ class TestBotOrchestrator(unittest.TestCase):
                 elapsed = time.monotonic() - t0
                 self.assertEqual(cycles, 1)
                 self.assertGreaterEqual(elapsed, 0.4)
+
+            # 7) Concurrent poll_asset() during startup initialize() only initializes once
+            with SQLiteCandleStore(":memory:") as store:
+                race_orch = BotOrchestrator(
+                    _make_cfg(signal_enabled=False),
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                init_calls = 0
+                orig_init_locked = race_orch._initialize_locked
+                entered = threading.Event()
+                proceed = threading.Event()
+
+                def _slow_init_locked(*, strict_nn_startup: bool = False) -> Any:
+                    nonlocal init_calls
+                    init_calls += 1
+                    entered.set()
+                    proceed.wait(timeout=2.0)
+                    return orig_init_locked(strict_nn_startup=strict_nn_startup)
+
+                race_orch._initialize_locked = _slow_init_locked  # type: ignore[method-assign]
+                t_init = threading.Thread(target=race_orch.initialize)
+                t_init.start()
+                self.assertTrue(entered.wait(timeout=2.0))
+                t_poll = threading.Thread(target=lambda: race_orch.poll_asset("btc_1h"))
+                t_poll.start()
+                time.sleep(0.05)
+                proceed.set()
+                t_init.join(timeout=3.0)
+                t_poll.join(timeout=3.0)
+                self.assertEqual(init_calls, 1)
         finally:
             srv_s.shutdown()
             srv_s.server_close()

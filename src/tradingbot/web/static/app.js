@@ -307,7 +307,10 @@
       const item = document.createElement("div");
       const cls = actionClass(a.action);
       item.className = `alert-item ${cls}` + (a.acknowledged ? " acked" : "");
-      const rr = a.payload && a.payload.risk_reward ? ` · R:R ${a.payload.risk_reward.toFixed(2)}` : "";
+      const rr =
+        a.payload && a.payload.risk_reward != null
+          ? ` · R:R ${Number(a.payload.risk_reward).toFixed(2)}`
+          : "";
       const ackBtn = a.acknowledged
         ? '<span class="badge-muted">Acked</span>'
         : `<button class="mini-btn" data-ack="${a.id}" type="button">Ack</button>`;
