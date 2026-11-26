@@ -1,0 +1,51 @@
+{
+  "name": "binance_spot",
+  "type": "generic_rest",
+  "base_url": "https://api.binance.com",
+  "endpoint": "/api/v3/klines",
+  "http_method": "GET",
+  "timeout_sec": 10.0,
+  "rate_limit_ms": 200,
+  "max_candles_per_request": 1000,
+  "params_map": {
+    "symbol": "symbol",
+    "interval": "interval",
+    "start_time": "startTime",
+    "end_time": "endTime",
+    "limit": "limit"
+  },
+  "interval_map": {
+    "1m": "1m",
+    "3m": "3m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1h",
+    "2h": "2h",
+    "4h": "4h",
+    "6h": "6h",
+    "8h": "8h",
+    "12h": "12h",
+    "1d": "1d",
+    "3d": "3d",
+    "1w": "1w"
+  },
+  "response_mapping": {
+    "data_path": "",
+    "format": "array_of_arrays",
+    "fields": {
+      "open_time": 0,
+      "open": 1,
+      "high": 2,
+      "low": 3,
+      "close": 4,
+      "volume": 5,
+      "close_time": 6
+    },
+    "timestamp_unit": "ms",
+    "order": "asc"
+  },
+  "headers": {},
+  "api_key_env": "",
+  "api_key_header": ""
+}
