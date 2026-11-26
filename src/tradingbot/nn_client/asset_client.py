@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from tradingbot.nn_client.client import (
     RawPrediction,
     SchemaMismatchError,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def verify_endpoint_schema(
@@ -43,6 +46,13 @@ def verify_endpoint_schema(
                     f"(input={expected_schema.input_size}, output={expected_schema.output_size}). "
                     "Re-export dataset and retrain the model."
                 )
+        else:
+            _LOGGER.warning(
+                "Schema file '%s' configured for model '%s' does not exist on disk; "
+                "falling back to /info dimension checks only.",
+                path,
+                model_label,
+            )
 
     info = client.info()
     if info.input_size != expected_schema.input_size:
@@ -134,13 +144,27 @@ class AssetNNClient:
                 schema_file_path=self._signal_cfg.schema_path,
             )
         expected_input = self._pipeline.build_schema("candles").input_size
-        for name, (_cfg, client) in self._extra_clients.items():
+        for name, (ep_cfg, client) in self._extra_clients.items():
             info = client.info()
             if info.input_size != expected_input:
                 raise SchemaMismatchError(
                     f"Extra model '{self._asset.id}:{name}' at {client.base_url} expects "
                     f"input_size={info.input_size}, got {expected_input}"
                 )
+            if ep_cfg.schema_path:
+                ep_path = Path(ep_cfg.schema_path)
+                if ep_path.is_file():
+                    try:
+                        saved = load_feature_schema(ep_path)
+                    except SchemaError as exc:
+                        raise SchemaMismatchError(
+                            f"Extra model '{self._asset.id}:{name}' schema file '{ep_path}' is invalid: {exc}"
+                        ) from exc
+                    if info.output_size != saved.output_size:
+                        raise SchemaMismatchError(
+                            f"Extra model '{self._asset.id}:{name}' at {client.base_url} produces "
+                            f"output_size={info.output_size}, schema expects {saved.output_size}"
+                        )
             infos[name] = info
         return infos
 

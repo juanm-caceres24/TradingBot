@@ -62,6 +62,9 @@ def snapshot_to_dict(snapshot: PredictionSnapshot) -> dict[str, Any]:
             if snapshot.analysis is not None
             else None
         ),
+        "extra_outputs": {
+            name: list(values) for name, values in snapshot.extra_outputs.items()
+        },
     }
 
 
@@ -132,6 +135,7 @@ class PredictionEngine:
         ctx = self._pipeline.build_latest_inference_window(candles)
         raw_candles = self._nn_client.predict_candles(ctx.vector)
         signal_pred = self._nn_client.predict_signal(ctx.vector)
+        extra_preds = self._nn_client.predict_extra(ctx.vector)
 
         predicted_candles = (
             reconstruct_predicted_candles(
@@ -159,4 +163,5 @@ class PredictionEngine:
             signal=signal_pred,
             analysis=analysis,
             candle_latency_us=raw_candles.latency_us if raw_candles is not None else None,
+            extra_outputs={name: pred.output for name, pred in extra_preds.items()},
         )

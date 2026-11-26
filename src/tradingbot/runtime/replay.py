@@ -131,6 +131,7 @@ class ReplayEngine:
 
             raw_candles = self._nn_client.predict_candles(ctx.vector)
             signal_pred = self._nn_client.predict_signal(ctx.vector)
+            extra_preds = self._nn_client.predict_extra(ctx.vector)
             predicted_candles = (
                 reconstruct_predicted_candles(raw_candles.output, ctx, tf)
                 if raw_candles is not None
@@ -152,21 +153,29 @@ class ReplayEngine:
                 signal=signal_pred,
                 analysis=analysis,
                 candle_latency_us=raw_candles.latency_us if raw_candles is not None else None,
+                extra_outputs={name: pred.output for name, pred in extra_preds.items()},
             )
 
             predictions_made += 1
             action_counts[analysis.action] = action_counts.get(analysis.action, 0) + 1
 
-            # Post-hoc accuracy check when actual future bar `idx + horizon` exists in history.
+            # Post-hoc accuracy check when actual future bar `idx + horizon` exists and matches horizon time.
             if idx + horizon < n and predicted_candles:
-                actual_future_close = candles[idx + horizon].close
-                actual_ret = (actual_future_close - ctx.anchor_close) / ctx.anchor_close
-                pred_ret = (predicted_candles[-1].close - ctx.anchor_close) / ctx.anchor_close
-                abs_errors.append(abs(pred_ret - actual_ret))
-                if actual_ret != 0.0 and pred_ret != 0.0:
-                    directional_total += 1
-                    if (actual_ret > 0.0) == (pred_ret > 0.0):
-                        directional_hits += 1
+                future_candle = candles[idx + horizon]
+                horizon_valid = (
+                    self._asset.market.market_schedule != "24/7"
+                    or future_candle.open_time_ms
+                    == ctx.anchor_candle.open_time_ms + horizon * tf.interval_ms
+                )
+                if horizon_valid:
+                    actual_future_close = future_candle.close
+                    actual_ret = (actual_future_close - ctx.anchor_close) / ctx.anchor_close
+                    pred_ret = (predicted_candles[-1].close - ctx.anchor_close) / ctx.anchor_close
+                    abs_errors.append(abs(pred_ret - actual_ret))
+                    if actual_ret != 0.0 and pred_ret != 0.0:
+                        directional_total += 1
+                        if (actual_ret > 0.0) == (pred_ret > 0.0):
+                            directional_hits += 1
 
             if persist_predictions and store is not None:
                 store.save_prediction(

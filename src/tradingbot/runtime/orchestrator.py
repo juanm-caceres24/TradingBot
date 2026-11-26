@@ -56,11 +56,14 @@ class AssetRunner:
             else PredictionEngine(asset, clock_ms=clock_ms)
         )
         self._alert_evaluator = AlertEvaluator(asset, clock_ms=clock_ms)
+        self._lock = threading.RLock()
         self._indicator_engine = self._prediction_engine.pipeline.indicator_engine
         self._indicator_plots = {ind.id: ind.plot for ind in asset.indicators}
+        self._indicator_types = {ind.id: ind.type for ind in asset.indicators}
 
-        # Retain enough bars in RAM for indicator warmup + NN input window + Web UI chart.
-        chart_need = self._indicator_engine.max_warmup(nn_only=False) + visible_candles
+        # Retain enough bars in RAM for indicator warmup + NN input window + Web UI zoom (up to 250 bars).
+        max_warm = self._indicator_engine.max_warmup(nn_only=False)
+        chart_need = max_warm + max(visible_candles, 250)
         nn_need = self._prediction_engine.pipeline.min_candles_for_inference
         self._buffer_limit = max(chart_need, nn_need) + 20
 
@@ -118,6 +121,7 @@ class AssetRunner:
                 for ind_id, cols in self._indicators.items()
             },
             indicator_plots=dict(self._indicator_plots),
+            indicator_types=dict(self._indicator_types),
             latest_prediction=self._latest_prediction,
             nn_health=dict(self._nn_health),
             alert_status=self._alert_evaluator.status_dict(),
@@ -155,7 +159,17 @@ class AssetRunner:
             return None, None, []
 
         self._latest_prediction = snapshot
-        self._nn_health = self._prediction_engine.nn_client.health_summary()
+        # Successful predict() already proves every enabled endpoint responded cleanly;
+        # avoid extra GET /health round-trips on every candle.
+        nn_client = self._prediction_engine.nn_client
+        updated_health: dict[str, bool] = {}
+        if nn_client.candle_enabled:
+            updated_health["candle_predictor"] = True
+        if nn_client.signal_enabled:
+            updated_health["signal_classifier"] = True
+        for name in snapshot.extra_outputs:
+            updated_health[name] = True
+        self._nn_health = updated_health
 
         if on_closed_bar and self._asset.runtime.persist_to_db:
             store.save_prediction(
@@ -209,100 +223,107 @@ class AssetRunner:
         now_ms: int | None = None,
     ) -> PollOutcome:
         """Perform startup model check, initial sync/live-only load, and initial indicators."""
-        effective_now = self._clock_ms() if now_ms is None else now_ms
-        self._last_error = None
+        with self._lock:
+            effective_now = self._clock_ms() if now_ms is None else now_ms
+            self._last_error = None
 
-        # Always fail-fast on genuine SchemaMismatchError; tolerate temporarily offline NN servers
-        # unless strict_nn_startup=True.
-        if self._prediction_engine.nn_client.has_any_model:
-            try:
-                self._prediction_engine.verify_models()
-                self._nn_health = self._prediction_engine.nn_client.health_summary()
-            except SchemaMismatchError:
-                raise
-            except NNClientError as exc:
-                self._nn_health = self._prediction_engine.nn_client.health_summary()
-                self._last_error = str(exc)
-                if strict_nn_startup:
+            # Seed AlertEvaluator from latest persisted alert so restarting does not re-emit
+            # a duplicate alert on the exact same closed bar.
+            latest_alerts = store.get_alerts(asset_id=self._asset.id, limit=1)
+            if latest_alerts:
+                self._alert_evaluator.seed_last_anchor(latest_alerts[0].anchor_open_time_ms)
+
+            # Always fail-fast on genuine SchemaMismatchError; tolerate temporarily offline NN servers
+            # unless strict_nn_startup=True.
+            if self._prediction_engine.nn_client.has_any_model:
+                try:
+                    self._prediction_engine.verify_models()
+                    self._nn_health = self._prediction_engine.nn_client.health_summary()
+                except SchemaMismatchError:
                     raise
+                except NNClientError as exc:
+                    self._nn_health = self._prediction_engine.nn_client.health_summary()
+                    self._last_error = str(exc)
+                    if strict_nn_startup:
+                        raise
 
-        mode = self._asset.runtime.mode
-        received = 0
-        try:
-            if mode == "sync_live":
-                report = sync_service.sync_asset_to_now(
-                    self._asset,
-                    now_ms=effective_now,
-                    min_candles_when_empty=self._buffer_limit,
-                    include_open_candle=True,
+            mode = self._asset.runtime.mode
+            received = 0
+            try:
+                if mode == "sync_live" and self._asset.runtime.persist_to_db:
+                    report = sync_service.sync_asset_to_now(
+                        self._asset,
+                        now_ms=effective_now,
+                        min_candles_when_empty=self._buffer_limit,
+                        include_open_candle=True,
+                    )
+                    received = report.candles_upserted
+                    loaded = store.get_latest_candles(
+                        self._asset.provider.name,
+                        self._asset.market.symbol,
+                        self._asset.market.timeframe,
+                        limit=self._buffer_limit,
+                        closed_only=False,
+                    )
+                    self._merge_candles_into_buffer(loaded)
+                elif mode in ("live_only", "sync_live"):
+                    # In live_only (or sync_live with persist_to_db=False), load working buffer in RAM.
+                    fetched = sync_service.fetch_latest_candles(
+                        self._asset,
+                        limit=self._buffer_limit,
+                        persist=self._asset.runtime.persist_to_db,
+                    )
+                    received = len(fetched)
+                    self._merge_candles_into_buffer(fetched)
+                else:
+                    loaded = store.get_latest_candles(
+                        self._asset.provider.name,
+                        self._asset.market.symbol,
+                        self._asset.market.timeframe,
+                        limit=self._buffer_limit,
+                        closed_only=False,
+                    )
+                    received = len(loaded)
+                    self._merge_candles_into_buffer(loaded)
+            except ProviderError as exc:
+                self._last_error = str(exc)
+                runtime_state.update(self._build_runtime_snapshot())
+                return PollOutcome(
+                    asset_id=self._asset.id,
+                    candles_received=0,
+                    new_closed_candle=False,
+                    error=str(exc),
                 )
-                received = report.candles_upserted
-                loaded = store.get_latest_candles(
-                    self._asset.provider.name,
-                    self._asset.market.symbol,
-                    self._asset.market.timeframe,
-                    limit=self._buffer_limit,
-                    closed_only=False,
-                )
-                self._merge_candles_into_buffer(loaded)
-            elif mode == "live_only":
-                fetched = sync_service.fetch_latest_candles(
-                    self._asset,
-                    limit=self._buffer_limit,
-                    persist=self._asset.runtime.persist_to_db,
-                )
-                received = len(fetched)
-                self._merge_candles_into_buffer(fetched)
-            else:
-                # Fallback: load latest stored bars if present
-                loaded = store.get_latest_candles(
-                    self._asset.provider.name,
-                    self._asset.market.symbol,
-                    self._asset.market.timeframe,
-                    limit=self._buffer_limit,
-                    closed_only=False,
-                )
-                received = len(loaded)
-                self._merge_candles_into_buffer(loaded)
-        except ProviderError as exc:
-            self._last_error = str(exc)
+
+            self._last_sync_ms = effective_now
+            self._recompute_indicators()
+
+            has_closed = any(c.is_closed for c in self._candles)
+            prediction, alert, wh_results = self._run_prediction_and_alerts(
+                store,
+                webhook_dispatcher,
+                event_bus,
+                on_closed_bar=has_closed,
+                now_ms=effective_now,
+            )
             runtime_state.update(self._build_runtime_snapshot())
+            event_bus.publish(
+                {
+                    "type": "status",
+                    "asset_id": self._asset.id,
+                    "status": "initialized",
+                    "candle_count": len(self._candles),
+                }
+            )
             return PollOutcome(
                 asset_id=self._asset.id,
-                candles_received=0,
-                new_closed_candle=False,
-                error=str(exc),
+                candles_received=received,
+                new_closed_candle=has_closed,
+                prediction=prediction,
+                alert=alert,
+                webhook_results=tuple(wh_results),
+                error=self._last_error,
             )
-
-        self._last_sync_ms = effective_now
-        self._recompute_indicators()
-
-        has_closed = any(c.is_closed for c in self._candles)
-        prediction, alert, wh_results = self._run_prediction_and_alerts(
-            store,
-            webhook_dispatcher,
-            event_bus,
-            on_closed_bar=has_closed,
-            now_ms=effective_now,
-        )
-        runtime_state.update(self._build_runtime_snapshot())
-        event_bus.publish(
-            {
-                "type": "status",
-                "asset_id": self._asset.id,
-                "status": "initialized",
-                "candle_count": len(self._candles),
-            }
-        )
-        return PollOutcome(
-            asset_id=self._asset.id,
-            candles_received=received,
-            new_closed_candle=has_closed,
-            prediction=prediction,
-            alert=alert,
-            webhook_results=tuple(wh_results),
-            error=self._last_error,
-        )
 
     def poll_once(
         self,
@@ -315,86 +336,98 @@ class AssetRunner:
         now_ms: int | None = None,
     ) -> PollOutcome:
         """Fetch latest bars, heal unexpected multi-bar gaps, recompute indicators, and predict."""
-        effective_now = self._clock_ms() if now_ms is None else now_ms
-        self._last_error = None
-        prev_closed_ts = self._last_closed_open_time_ms
+        with self._lock:
+            effective_now = self._clock_ms() if now_ms is None else now_ms
+            self._last_error = None
+            prev_closed_ts = self._last_closed_open_time_ms
+            tf = self._asset.market.parsed_timeframe
 
-        try:
-            fetched = sync_service.fetch_latest_candles(
-                self._asset,
-                limit=3,
-                persist=self._asset.runtime.persist_to_db,
-            )
-        except ProviderError as exc:
-            self._last_error = str(exc)
+            try:
+                fetched = sync_service.fetch_latest_candles(
+                    self._asset,
+                    limit=3,
+                    persist=self._asset.runtime.persist_to_db,
+                )
+
+                # If a poll paused longer than 1 interval in sync_live mode, heal missed closed bars cleanly.
+                closed_fetched = [c for c in fetched if c.is_closed]
+                if (
+                    self._asset.runtime.mode == "sync_live"
+                    and prev_closed_ts is not None
+                    and closed_fetched
+                    and closed_fetched[-1].open_time_ms - prev_closed_ts > tf.interval_ms
+                ):
+                    if self._asset.runtime.persist_to_db:
+                        sync_service.backfill_asset(
+                            self._asset,
+                            start_ms=prev_closed_ts + tf.interval_ms,
+                            end_ms=closed_fetched[-1].open_time_ms,
+                        )
+                        reloaded = store.get_latest_candles(
+                            self._asset.provider.name,
+                            self._asset.market.symbol,
+                            tf.label,
+                            limit=self._buffer_limit,
+                            closed_only=False,
+                        )
+                        new_closed = self._merge_candles_into_buffer(reloaded)
+                    else:
+                        missed_bars = int(
+                            (closed_fetched[-1].open_time_ms - prev_closed_ts) // tf.interval_ms
+                        )
+                        healed = sync_service.fetch_latest_candles(
+                            self._asset,
+                            limit=min(missed_bars + 2, self._buffer_limit),
+                            persist=False,
+                        )
+                        new_closed = self._merge_candles_into_buffer(healed)
+                else:
+                    new_closed = self._merge_candles_into_buffer(fetched)
+            except ProviderError as exc:
+                self._last_error = str(exc)
+                runtime_state.update(self._build_runtime_snapshot())
+                return PollOutcome(
+                    asset_id=self._asset.id,
+                    candles_received=0,
+                    new_closed_candle=False,
+                    error=str(exc),
+                )
+
+            self._last_sync_ms = effective_now
+            self._recompute_indicators()
+
+            if self._candles:
+                event_bus.publish(
+                    {
+                        "type": "candle_update",
+                        "asset_id": self._asset.id,
+                        "candle": self._candles[-1].to_dict(),
+                        "is_new_close": new_closed,
+                    }
+                )
+
+            prediction: PredictionSnapshot | None = None
+            alert: AlertEvent | None = None
+            wh_results: list[WebhookDeliveryResult] = []
+            if new_closed or self._asset.runtime.predict_on_open_candle:
+                prediction, alert, wh_results = self._run_prediction_and_alerts(
+                    store,
+                    webhook_dispatcher,
+                    event_bus,
+                    on_closed_bar=new_closed,
+                    now_ms=effective_now,
+                )
+
             runtime_state.update(self._build_runtime_snapshot())
             return PollOutcome(
                 asset_id=self._asset.id,
-                candles_received=0,
-                new_closed_candle=False,
-                error=str(exc),
+                candles_received=len(fetched),
+                new_closed_candle=new_closed,
+                prediction=prediction,
+                alert=alert,
+                webhook_results=tuple(wh_results),
+                error=self._last_error,
             )
-
-        # If a poll paused longer than 1 interval in sync_live mode, heal missed closed bars cleanly.
-        tf = self._asset.market.parsed_timeframe
-        closed_fetched = [c for c in fetched if c.is_closed]
-        if (
-            self._asset.runtime.mode == "sync_live"
-            and prev_closed_ts is not None
-            and closed_fetched
-            and closed_fetched[-1].open_time_ms - prev_closed_ts > tf.interval_ms
-        ):
-            sync_service.backfill_asset(
-                self._asset,
-                start_ms=prev_closed_ts + tf.interval_ms,
-                end_ms=closed_fetched[-1].open_time_ms,
-            )
-            reloaded = store.get_latest_candles(
-                self._asset.provider.name,
-                self._asset.market.symbol,
-                tf.label,
-                limit=self._buffer_limit,
-                closed_only=False,
-            )
-            new_closed = self._merge_candles_into_buffer(reloaded)
-        else:
-            new_closed = self._merge_candles_into_buffer(fetched)
-
-        self._last_sync_ms = effective_now
-        self._recompute_indicators()
-
-        if self._candles:
-            event_bus.publish(
-                {
-                    "type": "candle_update",
-                    "asset_id": self._asset.id,
-                    "candle": self._candles[-1].to_dict(),
-                    "is_new_close": new_closed,
-                }
-            )
-
-        prediction: PredictionSnapshot | None = None
-        alert: AlertEvent | None = None
-        wh_results: list[WebhookDeliveryResult] = []
-        if new_closed or self._asset.runtime.predict_on_open_candle:
-            prediction, alert, wh_results = self._run_prediction_and_alerts(
-                store,
-                webhook_dispatcher,
-                event_bus,
-                on_closed_bar=new_closed,
-                now_ms=effective_now,
-            )
-
-        runtime_state.update(self._build_runtime_snapshot())
-        return PollOutcome(
-            asset_id=self._asset.id,
-            candles_received=len(fetched),
-            new_closed_candle=new_closed,
-            prediction=prediction,
-            alert=alert,
-            webhook_results=tuple(wh_results),
-            error=self._last_error,
-        )
 
 
 class BotOrchestrator:
@@ -448,6 +481,7 @@ class BotOrchestrator:
             for asset in selected_assets
         }
         self._next_poll_mono: dict[str, float] = {}
+        self._init_lock = threading.Lock()
         self._initialized = False
 
     @property
@@ -478,21 +512,42 @@ class BotOrchestrator:
         return self._stop_event.is_set()
 
     def initialize(self, *, strict_nn_startup: bool = False) -> list[PollOutcome]:
-        outcomes: list[PollOutcome] = []
-        now_mono = self._monotonic_fn()
-        for asset_id, runner in self._runners.items():
-            outcome = runner.initialize(
-                self._sync_service,
-                self._store,
-                self._state,
-                self._webhooks,
-                self._event_bus,
-                strict_nn_startup=strict_nn_startup,
-            )
-            outcomes.append(outcome)
-            self._next_poll_mono[asset_id] = now_mono + runner.asset.runtime.poll_interval_sec
-        self._initialized = True
-        return outcomes
+        with self._init_lock:
+            outcomes: list[PollOutcome] = []
+            for asset_id, runner in self._runners.items():
+                outcome = runner.initialize(
+                    self._sync_service,
+                    self._store,
+                    self._state,
+                    self._webhooks,
+                    self._event_bus,
+                    strict_nn_startup=strict_nn_startup,
+                )
+                outcomes.append(outcome)
+                self._next_poll_mono[asset_id] = (
+                    self._monotonic_fn() + runner.asset.runtime.poll_interval_sec
+                )
+            self._initialized = True
+            return outcomes
+
+    def poll_asset(self, asset_id: str) -> PollOutcome:
+        """Thread-safe single-asset poll ensuring startup initialization completed first."""
+        if asset_id not in self._runners:
+            raise KeyError(f"Unknown asset '{asset_id}'")
+        if not self._initialized:
+            self.initialize()
+        runner = self._runners[asset_id]
+        outcome = runner.poll_once(
+            self._sync_service,
+            self._store,
+            self._state,
+            self._webhooks,
+            self._event_bus,
+        )
+        self._next_poll_mono[asset_id] = (
+            self._monotonic_fn() + runner.asset.runtime.poll_interval_sec
+        )
+        return outcome
 
     def poll_due_assets(self, *, force_all: bool = False) -> list[PollOutcome]:
         """Poll every asset whose poll interval has elapsed (or all if force_all=True)."""
@@ -536,16 +591,21 @@ class BotOrchestrator:
             if max_cycles is not None and cycles >= max_cycles:
                 break
 
+            if not self._next_poll_mono:
+                if self._stop_event.wait(timeout=0.5):
+                    break
+                cycles += 1
+                continue
+
             now_mono = self._monotonic_fn()
-            if self._next_poll_mono:
-                next_due = min(self._next_poll_mono.values())
-                wait_sec = next_due - now_mono
-                if wait_sec > 0.0:
-                    # Wait in small slices so Ctrl+C / stop() exits promptly.
-                    sleep_step = min(wait_sec, 0.5)
-                    if self._stop_event.wait(timeout=sleep_step):
-                        break
-                    continue
+            next_due = min(self._next_poll_mono.values())
+            wait_sec = next_due - now_mono
+            if wait_sec > 0.0:
+                # Wait in small slices so Ctrl+C / stop() exits promptly.
+                sleep_step = min(wait_sec, 0.5)
+                if self._stop_event.wait(timeout=sleep_step):
+                    break
+                continue
 
             outcomes = self.poll_due_assets()
             cycles += 1

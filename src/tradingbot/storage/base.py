@@ -160,3 +160,16 @@ class CandleStore(ABC):
     @abstractmethod
     def acknowledge_alert(self, alert_id: int) -> bool:
         """Mark an alert as acknowledged. Returns True if a row was updated."""
+
+    @abstractmethod
+    def alert_exists(self, alert_id: int) -> bool:
+        """Return True if an alert with `alert_id` exists in storage."""
+
+    @abstractmethod
+    def count_alerts(
+        self,
+        *,
+        asset_id: str | None = None,
+        unacknowledged_only: bool = False,
+    ) -> int:
+        """Count persisted alerts matching optional filters."""

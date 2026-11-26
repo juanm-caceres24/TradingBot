@@ -581,3 +581,30 @@ class SQLiteCandleStore(CandleStore):
             with self._conn:
                 cur = self._conn.execute(sql, (alert_id,))
                 return int(cur.rowcount) > 0
+
+    def alert_exists(self, alert_id: int) -> bool:
+        if isinstance(alert_id, bool) or not isinstance(alert_id, int) or alert_id < 1:
+            raise ValueError(f"alert_id must be a positive integer, got {alert_id!r}")
+        sql = "SELECT 1 FROM alerts WHERE id = ? LIMIT 1"
+        with self._lock:
+            row = self._conn.execute(sql, (alert_id,)).fetchone()
+        return row is not None
+
+    def count_alerts(
+        self,
+        *,
+        asset_id: str | None = None,
+        unacknowledged_only: bool = False,
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if asset_id is not None:
+            clauses.append("asset_id = ?")
+            params.append(asset_id)
+        if unacknowledged_only:
+            clauses.append("acknowledged = 0")
+        where_sql = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        sql = f"SELECT COUNT(*) AS cnt FROM alerts {where_sql}"
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["cnt"]) if row is not None else 0

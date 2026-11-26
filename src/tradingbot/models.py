@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,6 +17,10 @@ _UNIT_MS: dict[str, int] = {
     "d": 86_400_000,
     "w": 604_800_000,
 }
+
+# Unix epoch (1970-01-01T00:00:00Z) fell on a Thursday. Standard ISO / Binance weekly
+# candles open on Monday 00:00:00 UTC (+4 days from Unix epoch).
+_WEEKLY_MONDAY_OFFSET_MS = 4 * 86_400_000
 
 _VALID_ACTIONS = frozenset({"HOLD", "LONG", "SHORT"})
 
@@ -88,10 +92,15 @@ def format_ms_to_iso(ts_ms: int) -> str:
 
 @dataclass(frozen=True, order=True)
 class Timeframe:
-    """Canonical candle interval representation (e.g., '1m', '15m', '1h', '1d', '1w')."""
+    """Canonical candle interval representation (e.g., '1m', '15m', '1h', '1d', '1w').
+
+    Weekly intervals ('w') anchor to Monday 00:00:00 UTC (matching ISO-8601 and Binance)
+    rather than Thursday 1970-01-01 Unix epoch.
+    """
 
     interval_ms: int
     label: str
+    anchor_offset_ms: int = 0
 
     @classmethod
     def parse(cls, text: str) -> Timeframe:
@@ -105,7 +114,12 @@ class Timeframe:
             )
         amount = int(match.group(1))
         unit = match.group(2)
-        return cls(interval_ms=amount * _UNIT_MS[unit], label=f"{amount}{unit}")
+        offset = _WEEKLY_MONDAY_OFFSET_MS if unit == "w" else 0
+        return cls(
+            interval_ms=amount * _UNIT_MS[unit],
+            label=f"{amount}{unit}",
+            anchor_offset_ms=offset,
+        )
 
     @property
     def interval_seconds(self) -> int:
@@ -113,21 +127,29 @@ class Timeframe:
 
     def is_aligned(self, ts_ms: int) -> bool:
         _ensure_strict_int(ts_ms, "ts_ms")
-        return ts_ms >= 0 and (ts_ms % self.interval_ms == 0)
+        return ts_ms >= 0 and ((ts_ms - self.anchor_offset_ms) % self.interval_ms == 0)
 
     def align_floor(self, ts_ms: int) -> int:
         """Return the largest aligned candle open_time <= ts_ms."""
         _ensure_strict_int(ts_ms, "ts_ms")
         if ts_ms < 0:
             raise ValueError(f"ts_ms must be >= 0, got {ts_ms}")
-        return (ts_ms // self.interval_ms) * self.interval_ms
+        if ts_ms < self.anchor_offset_ms:
+            return 0
+        return ((ts_ms - self.anchor_offset_ms) // self.interval_ms) * self.interval_ms + self.anchor_offset_ms
 
     def align_ceil(self, ts_ms: int) -> int:
         """Return the smallest aligned candle open_time >= ts_ms."""
         _ensure_strict_int(ts_ms, "ts_ms")
         if ts_ms < 0:
             raise ValueError(f"ts_ms must be >= 0, got {ts_ms}")
-        return ((ts_ms + self.interval_ms - 1) // self.interval_ms) * self.interval_ms
+        if ts_ms <= self.anchor_offset_ms:
+            return self.anchor_offset_ms
+        return (
+            ((ts_ms - self.anchor_offset_ms + self.interval_ms - 1) // self.interval_ms)
+            * self.interval_ms
+            + self.anchor_offset_ms
+        )
 
     def next_open(self, open_time_ms: int) -> int:
         _ensure_strict_int(open_time_ms, "open_time_ms")
@@ -206,7 +228,7 @@ class Candle:
             raise ValueError("provider must be a non-empty string")
         if not isinstance(self.symbol, str) or not self.symbol.strip():
             raise ValueError("symbol must be a non-empty string")
-        Timeframe.parse(self.timeframe)
+        object.__setattr__(self, "timeframe", Timeframe.parse(self.timeframe).label)
 
         _ensure_strict_int(self.open_time_ms, "open_time_ms")
         _ensure_strict_int(self.close_time_ms, "close_time_ms")
@@ -385,13 +407,14 @@ class PredictionSnapshot:
     signal: SignalPrediction | None = None
     analysis: TradeAnalysis | None = None
     candle_latency_us: int | None = None
+    extra_outputs: dict[str, tuple[float, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.provider, str) or not self.provider.strip():
             raise ValueError("provider must be a non-empty string")
         if not isinstance(self.symbol, str) or not self.symbol.strip():
             raise ValueError("symbol must be a non-empty string")
-        Timeframe.parse(self.timeframe)
+        object.__setattr__(self, "timeframe", Timeframe.parse(self.timeframe).label)
         if self.asset_id:
             validate_asset_id(self.asset_id)
         _ensure_strict_int(self.anchor_open_time_ms, "anchor_open_time_ms")
@@ -428,7 +451,7 @@ class AlertEvent:
             raise ValueError("provider must be a non-empty string")
         if not isinstance(self.symbol, str) or not self.symbol.strip():
             raise ValueError("symbol must be a non-empty string")
-        Timeframe.parse(self.timeframe)
+        object.__setattr__(self, "timeframe", Timeframe.parse(self.timeframe).label)
         _ensure_strict_int(self.anchor_open_time_ms, "anchor_open_time_ms")
         _ensure_strict_int(self.created_at_ms, "created_at_ms")
         if self.anchor_open_time_ms < 0 or self.created_at_ms < 0:

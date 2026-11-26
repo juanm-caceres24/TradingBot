@@ -8,6 +8,7 @@ nested data_path, ms or s timestamps, asc or desc ordering).
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -17,6 +18,7 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+import tradingbot
 from tradingbot.config import ProviderConfig
 from tradingbot.models import Candle, Timeframe
 from tradingbot.providers.base import BaseProvider, ProviderError, default_clock_ms
@@ -106,7 +108,7 @@ class GenericRestProvider(BaseProvider):
     def _build_headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "TradingBot/0.2.0",
+            "User-Agent": f"TradingBot/{tradingbot.__version__}",
         }
         headers.update(self._config.headers)
         if self._config.api_key_env:
@@ -125,9 +127,16 @@ class GenericRestProvider(BaseProvider):
         return ts_ms
 
     def _from_provider_timestamp(self, raw_val: Any, field_name: str) -> int:
+        if isinstance(raw_val, bool):
+            raise ProviderError(
+                f"Invalid boolean timestamp value {raw_val!r} for '{field_name}'"
+            )
         try:
-            num = int(float(raw_val))
-        except (TypeError, ValueError) as exc:
+            fval = float(raw_val)
+            if not math.isfinite(fval):
+                raise ValueError("timestamp is not finite")
+            num = int(fval)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ProviderError(
                 f"Invalid timestamp value {raw_val!r} for '{field_name}'"
             ) from exc

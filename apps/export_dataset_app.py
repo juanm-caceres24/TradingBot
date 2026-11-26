@@ -61,7 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         default="data/exports",
-        help="Output directory for exported CSVs and nn_config.json files (default: data/exports).",
+        help="Output directory for exported CSVs, schemas, and nn_config.json files (default: data/exports).",
+    )
+    parser.add_argument(
+        "--update-asset-schema",
+        action="store_true",
+        help="Also write feature_schema.json to the asset's configured neural_networks.*.schema_path.",
     )
     parser.add_argument(
         "--start",
@@ -179,7 +184,7 @@ def _select_assets(all_assets: tuple[AssetConfig, ...], requested: list[str]) ->
     if requested:
         by_id = {a.id: a for a in all_assets}
         selected: list[AssetConfig] = []
-        for aid in requested:
+        for aid in dict.fromkeys(requested):
             if aid not in by_id:
                 raise ConfigError(
                     f"Unknown asset_id '{aid}'. Available: {', '.join(sorted(by_id.keys()))}"
@@ -192,6 +197,10 @@ def _select_assets(all_assets: tuple[AssetConfig, ...], requested: list[str]) ->
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.synthetic_candles < 0:
+        print("Error: --synthetic-candles must be >= 0.", file=sys.stderr)
+        return 2
 
     try:
         cfg = load_config(args.config)
@@ -215,6 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         kinds = ("candles", "signal") if args.kind == "both" else (args.kind,)
         start_ms = parse_iso_to_ms(args.start) if args.start else None
         end_ms = parse_iso_to_ms(args.end) if args.end else None
+        if start_ms is not None and end_ms is not None and end_ms <= start_ms:
+            print("Error: --end must be strictly greater than --start.", file=sys.stderr)
+            return 2
 
         store: SQLiteCandleStore | None = None
         if args.synthetic_candles <= 0:
@@ -256,7 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     schema_out = (
                         Path(endpoint.schema_path)
-                        if endpoint.schema_path and args.synthetic_candles <= 0
+                        if args.update_asset_schema and endpoint.schema_path
                         else None
                     )
                     summary = export_dataset(
