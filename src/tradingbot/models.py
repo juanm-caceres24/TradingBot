@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 _TIMEFRAME_PATTERN = re.compile(r"^([1-9][0-9]*)([mhdw])$")
+_ASSET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 _UNIT_MS: dict[str, int] = {
     "m": 60_000,
@@ -18,6 +19,15 @@ _UNIT_MS: dict[str, int] = {
 }
 
 _VALID_ACTIONS = frozenset({"HOLD", "LONG", "SHORT"})
+
+
+def validate_asset_id(asset_id: str) -> str:
+    """Validate canonical URL-safe logical asset identifier (e.g. 'btc_1h', 'nvda_1d')."""
+    if not isinstance(asset_id, str) or not _ASSET_ID_PATTERN.match(asset_id):
+        raise ValueError(
+            f"Invalid asset_id {asset_id!r}. Must match '^[a-z0-9][a-z0-9_-]{{0,63}}$'."
+        )
+    return asset_id
 
 
 def _ensure_strict_int(value: Any, field_name: str) -> int:
@@ -78,7 +88,7 @@ def format_ms_to_iso(ts_ms: int) -> str:
 
 @dataclass(frozen=True, order=True)
 class Timeframe:
-    """Canonical candle interval representation (e.g., '1m', '15m', '1h', '1d')."""
+    """Canonical candle interval representation (e.g., '1m', '15m', '1h', '1d', '1w')."""
 
     interval_ms: int
     label: str
@@ -363,13 +373,14 @@ class TradeAnalysis:
 
 @dataclass(frozen=True)
 class PredictionSnapshot:
-    """Complete prediction bundle anchored to a specific candle open time."""
+    """Complete prediction bundle anchored to a specific asset and candle open time."""
 
     provider: str
     symbol: str
     timeframe: str
     anchor_open_time_ms: int
     created_at_ms: int
+    asset_id: str = ""
     predicted_candles: tuple[PredictedCandle, ...] = ()
     signal: SignalPrediction | None = None
     analysis: TradeAnalysis | None = None
@@ -381,6 +392,8 @@ class PredictionSnapshot:
         if not isinstance(self.symbol, str) or not self.symbol.strip():
             raise ValueError("symbol must be a non-empty string")
         Timeframe.parse(self.timeframe)
+        if self.asset_id:
+            validate_asset_id(self.asset_id)
         _ensure_strict_int(self.anchor_open_time_ms, "anchor_open_time_ms")
         _ensure_strict_int(self.created_at_ms, "created_at_ms")
         if self.anchor_open_time_ms < 0 or self.created_at_ms < 0:
@@ -389,3 +402,69 @@ class PredictionSnapshot:
             _ensure_strict_int(self.candle_latency_us, "candle_latency_us")
             if self.candle_latency_us < 0:
                 raise ValueError("candle_latency_us must be >= 0")
+
+
+@dataclass(frozen=True)
+class AlertEvent:
+    """Persisted trading alert emitted when an asset's alert rules trigger."""
+
+    asset_id: str
+    provider: str
+    symbol: str
+    timeframe: str
+    anchor_open_time_ms: int
+    created_at_ms: int
+    action: str
+    confidence: float
+    consecutive_hits: int
+    rule_name: str
+    payload_json: str
+    acknowledged: bool = False
+    alert_id: int | None = None
+
+    def __post_init__(self) -> None:
+        validate_asset_id(self.asset_id)
+        if not isinstance(self.provider, str) or not self.provider.strip():
+            raise ValueError("provider must be a non-empty string")
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            raise ValueError("symbol must be a non-empty string")
+        Timeframe.parse(self.timeframe)
+        _ensure_strict_int(self.anchor_open_time_ms, "anchor_open_time_ms")
+        _ensure_strict_int(self.created_at_ms, "created_at_ms")
+        if self.anchor_open_time_ms < 0 or self.created_at_ms < 0:
+            raise ValueError("Alert timestamps must be >= 0")
+        if self.action not in _VALID_ACTIONS:
+            raise ValueError(f"action must be one of {sorted(_VALID_ACTIONS)}, got {self.action!r}")
+        conf = _ensure_finite_float(self.confidence, "confidence")
+        if not (0.0 <= conf <= 1.0):
+            raise ValueError(f"confidence must be in [0, 1], got {conf}")
+        _ensure_strict_int(self.consecutive_hits, "consecutive_hits")
+        if self.consecutive_hits < 1:
+            raise ValueError(f"consecutive_hits must be >= 1, got {self.consecutive_hits}")
+        if not isinstance(self.rule_name, str) or not self.rule_name.strip():
+            raise ValueError("rule_name must be a non-empty string")
+        if not isinstance(self.payload_json, str):
+            raise ValueError("payload_json must be a string")
+        if not isinstance(self.acknowledged, bool):
+            raise ValueError("acknowledged must be a bool")
+        if self.alert_id is not None:
+            _ensure_strict_int(self.alert_id, "alert_id")
+            if self.alert_id < 1:
+                raise ValueError(f"alert_id must be >= 1, got {self.alert_id}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.alert_id,
+            "asset_id": self.asset_id,
+            "provider": self.provider,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "anchor_open_time_ms": self.anchor_open_time_ms,
+            "created_at_ms": self.created_at_ms,
+            "action": self.action,
+            "confidence": self.confidence,
+            "consecutive_hits": self.consecutive_hits,
+            "rule_name": self.rule_name,
+            "payload_json": self.payload_json,
+            "acknowledged": self.acknowledged,
+        }

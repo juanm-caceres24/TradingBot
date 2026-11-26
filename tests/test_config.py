@@ -1,4 +1,4 @@
-"""Unit tests for strict JSON configuration loading in tradingbot.config."""
+"""Unit tests for strict multi-asset JSON configuration loading in tradingbot.config."""
 
 from __future__ import annotations
 
@@ -10,122 +10,206 @@ from pathlib import Path
 
 from tradingbot.config import (
     ConfigError,
+    load_asset_config,
     load_config,
     load_provider_preset,
+    parse_asset_dict,
     parse_config_dict,
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_CONFIG_PATH = ROOT_DIR / "configs" / "btc_1h.json"
+BOT_CONFIG_PATH = ROOT_DIR / "configs" / "bot.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
 SYNTHETIC_PRESET_PATH = ROOT_DIR / "configs" / "providers" / "synthetic.json"
 
 
-class TestConfigLoading(unittest.TestCase):
+class TestMultiAssetConfigLoading(unittest.TestCase):
     def setUp(self) -> None:
-        self.base_raw = json.loads(BTC_CONFIG_PATH.read_text(encoding="utf-8"))
-        self.base_dir = BTC_CONFIG_PATH.parent
+        self.bot_raw = json.loads(BOT_CONFIG_PATH.read_text(encoding="utf-8"))
+        self.bot_dir = BOT_CONFIG_PATH.parent
+        self.asset_raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        self.asset_dir = BTC_1H_ASSET_PATH.parent
 
-    def test_load_default_btc_config_and_binance_preset(self) -> None:
-        cfg = load_config(BTC_CONFIG_PATH)
-        self.assertEqual(cfg.market.symbol, "BTCUSDT")
-        self.assertEqual(cfg.market.timeframe, "1h")
-        self.assertEqual(cfg.provider.name, "binance_spot")
-        self.assertEqual(cfg.provider.type, "generic_rest")
-        self.assertEqual(cfg.provider.max_candles_per_request, 1000)
-        self.assertIsNotNone(cfg.provider.response_mapping)
-        self.assertEqual(cfg.features.input_window, 31)
-        self.assertEqual(cfg.features.forecast_horizon, 7)
-        self.assertEqual(len(cfg.indicators), 5)
+    def test_load_root_bot_config_with_multiple_assets(self) -> None:
+        cfg = load_config(BOT_CONFIG_PATH)
+        self.assertEqual(cfg.storage.db_path, "data/market.db")
         self.assertEqual(cfg.web.visible_candles, 70)
-        self.assertIsNone(cfg.runtime.initial_history_from_ms())
+        self.assertTrue(cfg.notifications.api_enabled)
+        self.assertEqual(len(cfg.assets), 2)
+        self.assertEqual(len(cfg.enabled_assets), 1)
 
-    def test_load_synthetic_preset_and_override(self) -> None:
+        btc_1h = cfg.get_asset("btc_1h")
+        self.assertTrue(btc_1h.enabled)
+        self.assertEqual(btc_1h.market.symbol, "BTCUSDT")
+        self.assertEqual(btc_1h.market.timeframe, "1h")
+        self.assertEqual(btc_1h.provider.name, "binance_spot")
+        self.assertEqual(btc_1h.features.input_window, 31)
+        self.assertEqual(btc_1h.features.forecast_horizon, 7)
+        self.assertEqual(btc_1h.alerts.consecutive_candles, 2)
+        self.assertEqual(btc_1h.alerts.cooldown_candles, 5)
+        self.assertEqual(btc_1h.alerts.actions, ("LONG", "SHORT"))
+
+        btc_1w = cfg.get_asset("btc_1w")
+        # Inline override in bot.json disabled btc_1w
+        self.assertFalse(btc_1w.enabled)
+        self.assertEqual(btc_1w.market.timeframe, "1w")
+        self.assertFalse(btc_1w.neural_networks.candle_predictor.enabled)
+
+        with self.assertRaises(KeyError):
+            cfg.get_asset("nvda_1h")
+
+    def test_load_standalone_asset_and_synthetic_override(self) -> None:
+        standalone = load_asset_config(BTC_1H_ASSET_PATH)
+        self.assertEqual(standalone.id, "btc_1h")
+        self.assertIsNone(standalone.runtime.initial_history_from_ms())
+
         syn = load_provider_preset(SYNTHETIC_PRESET_PATH)
         self.assertEqual(syn.type, "synthetic")
-        self.assertIsNotNone(syn.synthetic)
         assert syn.synthetic is not None
         self.assertEqual(syn.synthetic.seed, 42)
 
-        raw = copy.deepcopy(self.base_raw)
-        raw["provider"] = {
-            "preset_path": "providers/synthetic.json",
+        raw_asset = copy.deepcopy(self.asset_raw)
+        raw_asset["provider"] = {
+            "preset_path": "../providers/synthetic.json",
             "max_candles_per_request": 500,
         }
-        cfg = parse_config_dict(raw, base_dir=self.base_dir)
-        self.assertEqual(cfg.provider.type, "synthetic")
-        self.assertEqual(cfg.provider.max_candles_per_request, 500)
+        raw_asset["neural_networks"]["extra_models"] = {
+            "volatility_model": {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": 8090,
+                "schema_path": "data/btc_1h_vol_schema.json",
+            }
+        }
+        parsed = parse_asset_dict(raw_asset, base_dir=self.asset_dir)
+        self.assertEqual(parsed.provider.type, "synthetic")
+        self.assertEqual(parsed.provider.max_candles_per_request, 500)
+        self.assertIn("volatility_model", parsed.neural_networks.extra_models)
+        self.assertEqual(parsed.neural_networks.extra_models["volatility_model"].port, 8090)
 
-    def test_reject_unknown_keys_everywhere(self) -> None:
-        cases = [
-            (["typo_root"], True),
-            (["market", "extra"], 1),
-            (["storage", "unknown_flag"], False),
-            (["runtime", "unknown_mode"], "x"),
-            (["features", "extra_window"], 5),
-            (["features", "triple_barrier", "extra"], 0.1),
-            (["neural_networks", "extra"], 1),
-            (["neural_networks", "candle_predictor", "extra"], 1),
-            (["analysis", "extra"], 1),
-            (["web", "extra"], 1),
+    def test_notifications_webhooks_validation(self) -> None:
+        raw = copy.deepcopy(self.bot_raw)
+        raw["notifications"]["webhooks"] = [
+            {
+                "name": "telegram_bridge",
+                "url": "http://127.0.0.1:9000/alert",
+                "enabled": True,
+                "timeout_sec": 3.0,
+                "headers": {"X-Source": "tradingbot"},
+                "auth_token_env": "TELEGRAM_BRIDGE_TOKEN",
+                "auth_header": "Authorization",
+            }
         ]
-        for path, val in cases:
+        cfg = parse_config_dict(raw, base_dir=self.bot_dir)
+        self.assertEqual(len(cfg.notifications.webhooks), 1)
+        self.assertEqual(cfg.notifications.webhooks[0].name, "telegram_bridge")
+
+        # Reject invalid URL scheme
+        raw_bad_url = copy.deepcopy(raw)
+        raw_bad_url["notifications"]["webhooks"][0]["url"] = "ftp://example.com"
+        with self.assertRaises(ConfigError):
+            parse_config_dict(raw_bad_url, base_dir=self.bot_dir)
+
+        # Reject unpaired auth_token_env / auth_header
+        raw_bad_auth = copy.deepcopy(raw)
+        raw_bad_auth["notifications"]["webhooks"][0]["auth_header"] = ""
+        with self.assertRaises(ConfigError):
+            parse_config_dict(raw_bad_auth, base_dir=self.bot_dir)
+
+    def test_reject_duplicate_and_empty_assets(self) -> None:
+        raw = copy.deepcopy(self.bot_raw)
+        raw["assets"] = []
+        with self.assertRaises(ConfigError):
+            parse_config_dict(raw, base_dir=self.bot_dir)
+
+        raw_dup = copy.deepcopy(self.bot_raw)
+        raw_dup["assets"] = [
+            {"config_path": "assets/btc_1h.json"},
+            {"config_path": "assets/btc_1h.json"},
+        ]
+        with self.assertRaises(ConfigError):
+            parse_config_dict(raw_dup, base_dir=self.bot_dir)
+
+    def test_reject_unknown_keys_root_and_asset(self) -> None:
+        for path in (
+            ["typo_root"],
+            ["storage", "unknown_flag"],
+            ["web", "extra"],
+            ["notifications", "extra"],
+        ):
             with self.subTest(path=path):
-                raw = copy.deepcopy(self.base_raw)
+                raw = copy.deepcopy(self.bot_raw)
                 target = raw
                 for key in path[:-1]:
                     target = target[key]
-                target[path[-1]] = val
+                target[path[-1]] = 1
                 with self.assertRaises(ConfigError):
-                    parse_config_dict(raw, base_dir=self.base_dir)
+                    parse_config_dict(raw, base_dir=self.bot_dir)
 
-    def test_reject_unknown_key_in_indicator_and_provider(self) -> None:
-        raw = copy.deepcopy(self.base_raw)
-        raw["indicators"][0]["unexpected"] = 123
+        for path in (
+            ["typo_asset"],
+            ["market", "extra"],
+            ["runtime", "unknown_mode"],
+            ["features", "extra_window"],
+            ["features", "triple_barrier", "extra"],
+            ["neural_networks", "extra"],
+            ["neural_networks", "candle_predictor", "extra"],
+            ["analysis", "extra"],
+            ["alerts", "extra"],
+        ):
+            with self.subTest(asset_path=path):
+                raw = copy.deepcopy(self.asset_raw)
+                target = raw
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = 1
+                with self.assertRaises(ConfigError):
+                    parse_asset_dict(raw, base_dir=self.asset_dir)
+
+    def test_reject_invalid_asset_fields_and_bool_types(self) -> None:
+        # Invalid asset_id
+        raw = copy.deepcopy(self.asset_raw)
+        raw["id"] = "BTC/1H"
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw, base_dir=self.base_dir)
+            parse_asset_dict(raw, base_dir=self.asset_dir)
 
-        raw2 = copy.deepcopy(self.base_raw)
-        raw2["provider"]["unknown_provider_key"] = "oops"
+        # Bool where int/float expected
+        raw_bool = copy.deepcopy(self.asset_raw)
+        raw_bool["alerts"]["consecutive_candles"] = True
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw2, base_dir=self.base_dir)
+            parse_asset_dict(raw_bool, base_dir=self.asset_dir)
 
-    def test_reject_bool_where_int_or_float_expected(self) -> None:
-        raw = copy.deepcopy(self.base_raw)
-        raw["features"]["input_window"] = True
+        raw_bool_f = copy.deepcopy(self.asset_raw)
+        raw_bool_f["runtime"]["poll_interval_sec"] = False
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw, base_dir=self.base_dir)
+            parse_asset_dict(raw_bool_f, base_dir=self.asset_dir)
 
-        raw2 = copy.deepcopy(self.base_raw)
-        raw2["runtime"]["poll_interval_sec"] = True
+        # Unmapped timeframe for REST provider
+        raw_tf = copy.deepcopy(self.asset_raw)
+        raw_tf["market"]["timeframe"] = "7h"
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw2, base_dir=self.base_dir)
+            parse_asset_dict(raw_tf, base_dir=self.asset_dir)
 
-    def test_reject_unmapped_timeframe_for_rest_provider(self) -> None:
-        raw = copy.deepcopy(self.base_raw)
-        raw["market"]["timeframe"] = "7h"
+        # Duplicate indicator IDs
+        raw_ind = copy.deepcopy(self.asset_raw)
+        raw_ind["indicators"][1]["id"] = raw_ind["indicators"][0]["id"]
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw, base_dir=self.base_dir)
+            parse_asset_dict(raw_ind, base_dir=self.asset_dir)
 
-    def test_reject_duplicate_indicator_ids(self) -> None:
-        raw = copy.deepcopy(self.base_raw)
-        raw["indicators"][1]["id"] = raw["indicators"][0]["id"]
+        # Empty alert actions
+        raw_act = copy.deepcopy(self.asset_raw)
+        raw_act["alerts"]["actions"] = []
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw, base_dir=self.base_dir)
+            parse_asset_dict(raw_act, base_dir=self.asset_dir)
 
-    def test_initial_history_from_validation(self) -> None:
-        raw = copy.deepcopy(self.base_raw)
+    def test_initial_history_from_and_invalid_files(self) -> None:
+        raw = copy.deepcopy(self.asset_raw)
         raw["runtime"]["initial_history_from"] = "2024-06-01T00:00:00Z"
-        cfg = parse_config_dict(raw, base_dir=self.base_dir)
+        cfg = parse_asset_dict(raw, base_dir=self.asset_dir)
         self.assertEqual(cfg.runtime.initial_history_from_ms(), 1_717_200_000_000)
 
-        raw_bad = copy.deepcopy(self.base_raw)
-        raw_bad["runtime"]["initial_history_from"] = "invalid-date"
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw_bad, base_dir=self.base_dir)
-
-    def test_invalid_file_and_invalid_json(self) -> None:
-        with self.assertRaises(ConfigError):
-            load_config("/nonexistent/path/config.json")
+            load_config("/nonexistent/path/bot.json")
 
         with tempfile.TemporaryDirectory() as tmp:
             bad_file = Path(tmp) / "broken.json"
