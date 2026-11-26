@@ -231,6 +231,13 @@ class StorageConfig:
 
 
 @dataclass(frozen=True)
+class ExportConfig:
+    output_dir: str = "data/exports"
+    dataset_path_prefix: str = ""
+    model_save_dir: str = "models"
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     mode: str
     poll_interval_sec: float
@@ -351,6 +358,7 @@ class AppConfig:
     web: WebConfig
     notifications: NotificationsConfig
     assets: tuple[AssetConfig, ...]
+    export: ExportConfig = field(default_factory=ExportConfig)
 
     @property
     def enabled_assets(self) -> tuple[AssetConfig, ...]:
@@ -1031,7 +1039,7 @@ def parse_config_dict(
     root = _expect_dict(raw, "root")
     _reject_unknown_keys(
         root,
-        frozenset({"storage", "web", "notifications", "assets"}),
+        frozenset({"storage", "export", "web", "notifications", "assets"}),
         "root",
     )
 
@@ -1043,6 +1051,26 @@ def parse_config_dict(
         wal_mode=_expect_bool(s_raw.get("wal_mode", True), "storage.wal_mode"),
         busy_timeout_ms=_expect_int(s_raw.get("busy_timeout_ms", 5000), "storage.busy_timeout_ms", min_value=0),
     )
+
+    # export (optional root section controlling dataset/nn_config export paths)
+    if "export" in root:
+        e_raw = _expect_dict(root["export"], "export")
+        _reject_unknown_keys(
+            e_raw,
+            frozenset({"output_dir", "dataset_path_prefix", "model_save_dir"}),
+            "export",
+        )
+        export_cfg = ExportConfig(
+            output_dir=_expect_str(e_raw.get("output_dir", "data/exports"), "export.output_dir", allow_empty=False),
+            dataset_path_prefix=_expect_str(
+                e_raw.get("dataset_path_prefix", ""), "export.dataset_path_prefix", allow_empty=True
+            ),
+            model_save_dir=_expect_str(
+                e_raw.get("model_save_dir", "models"), "export.model_save_dir", allow_empty=False
+            ),
+        )
+    else:
+        export_cfg = ExportConfig()
 
     # web
     w_raw = _expect_dict(_require_key(root, "web", "root"), "web")
@@ -1088,6 +1116,7 @@ def parse_config_dict(
         web=web,
         notifications=notifications,
         assets=tuple(assets),
+        export=export_cfg,
     )
 
 
