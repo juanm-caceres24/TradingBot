@@ -149,6 +149,8 @@ TradingBot/
 │   ├── bot.json                         # Root multi-asset configuration
 │   ├── assets/                          # Per-asset / per-timeframe profiles
 │   │   ├── btc_1h.json
+│   │   ├── btc_4h.json
+│   │   ├── btc_1d.json
 │   │   └── btc_1w.json
 │   └── providers/                       # Declarative exchange/synthetic presets
 │       ├── binance_spot.json
@@ -188,3 +190,4 @@ TradingBot/
 | **`v0.4.0`** | Completed | Multi-model `NeuralNetworkClient` (`/health`, `/info`, `/predict`, startup schema check), relative-to-OHLC candle reconstruction, trade analysis engine, and stateful `AlertEvaluator` (thresholds, `consecutive_candles`, `cooldown_candles`). | Mock `server_app` integration tests (`200`/`400`/schema mismatch), candle geometry & trade analysis tests, consecutive-hit & cooldown alert state-machine tests. |
 | **`v0.5.0`** | Completed | Multi-asset continuous runtime orchestrator (`sync_live`, `live_only`, `replay`), open vs. closed candle transitions, prediction & alert DB persistence, outbound webhook dispatcher, `apps/live_app.py --headless`, `apps/replay_app.py`. | Simulated clock multi-asset live-loop tests, restart gap-recovery tests, webhook dispatch & replay pipeline tests. |
 | **`v0.6.0`** | Completed | Embedded zero-dependency Web Dashboard & External API (`ThreadingHTTPServer` + native RFC 6455 WebSocket `/ws/live` & `/ws/alerts` + REST `/api/assets`, `/api/alerts?since_id=`, `/api/alerts/{id}/ack`, `/api/actions/poll` + HiDPI HTML5 Canvas financial charts): multi-asset watchlist, sliding candle window, volume, overlays, synchronized RSI & Squeeze Momentum subcharts, translucent predicted candles with TP/SL lines, prediction & alerts panel, LAN/Tailscale ready. | API & WebSocket contract tests (including RFC 6455 handshake, Ping/Pong, static asset & path-traversal safety, cursor-based external alert consumer simulation, and `live_app.py` embedded web launch). |
+| **`v0.6.1`** | Completed | Additional calibrated multi-timeframe BTC asset profiles (`configs/assets/btc_4h.json`, `configs/assets/btc_1d.json`) registered in `configs/bot.json` with dedicated non-overlapping NN server ports (`8084/8085`, `8086/8087`) and timeframe-scaled Triple Barrier / alert thresholds. | Strict config validation and unique NN port verification across all configured BTC timeframes (`1h`, `4h`, `1d`, `1w`). |
