@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TradingBot Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand-mark">TB</span>
+        <div>
+          <h1 id="dashboard-title" class="brand-title">TradingBot Dashboard</h1>
+          <div id="active-ticker-meta" class="brand-subtitle">Loading assets...</div>
+        </div>
+      </div>
+
+      <div class="topbar-center">
+        <div id="active-price-display" class="live-price">--</div>
+        <div id="active-action-pill" class="action-pill neutral">HOLD</div>
+      </div>
+
+      <div class="topbar-right">
+        <div class="toolbar-group">
+          <label class="select-label" for="visible-select">Bars</label>
+          <select id="visible-select" class="btn btn-select" title="Visible historical candles">
+            <option value="40">40</option>
+            <option value="70" selected>70</option>
+            <option value="120">120</option>
+            <option value="200">200</option>
+          </select>
+          <button id="btn-toggle-pred" class="btn btn-active" type="button" title="Toggle translucent predicted candles">Forecast: ON</button>
+          <button id="btn-snap-live" class="btn" type="button" title="Jump back to latest candles">Snap Live</button>
+          <button id="btn-poll-now" class="btn btn-primary" type="button" title="Force immediate poll for active asset">Poll Now</button>
+          <!-- Extensible hook for future user buttons -->
+          <div id="custom-actions" class="toolbar-custom"></div>
+        </div>
+        <div id="ws-badge" class="ws-badge connecting">
+          <span class="ws-dot"></span>
+          <span id="ws-label">CONNECTING</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main 3-Column Workspace -->
+    <div class="workspace">
+      <!-- Left Sidebar: Multi-Asset Watchlist -->
+      <aside class="panel watchlist-panel">
+        <div class="panel-header">
+          <h2>Watchlist</h2>
+          <span id="watchlist-count" class="badge-muted">0</span>
+        </div>
+        <div id="watchlist-container" class="watchlist-list">
+          <div class="empty-state">Waiting for assets...</div>
+        </div>
+      </aside>
+
+      <!-- Center Stage: Synchronized Financial Chart Stack -->
+      <main class="chart-stage">
+        <div class="chart-toolbar">
+          <div id="indicator-toggles" class="indicator-chips"></div>
+          <div id="crosshair-readout" class="crosshair-readout">Hover chart to inspect OHLCV &amp; indicators</div>
+        </div>
+        <div id="chart-container" class="chart-canvas-wrap">
+          <canvas id="main-chart"></canvas>
+        </div>
+      </main>
+
+      <!-- Right Sidebar: Prediction, Analysis & Alerts -->
+      <aside class="panel insights-panel">
+        <section class="card">
+          <div class="card-header">
+            <h3>Prediction &amp; Analysis</h3>
+            <span id="latency-badge" class="badge-muted">-- &mu;s</span>
+          </div>
+          <div class="analysis-hero">
+            <div id="analysis-action" class="analysis-action neutral">HOLD</div>
+            <div class="analysis-conf-wrap">
+              <div class="metric-label">Confidence</div>
+              <div id="analysis-confidence" class="metric-value">--</div>
+            </div>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <span class="metric-label">Expected Move</span>
+              <span id="metric-move" class="metric-value">--</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Risk / Reward</span>
+              <span id="metric-rr" class="metric-value">--</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Est. Take Profit</span>
+              <span id="metric-tp" class="metric-value bullish">--</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Est. Stop Loss</span>
+              <span id="metric-sl" class="metric-value bearish">--</span>
+            </div>
+          </div>
+          <p id="analysis-reason" class="analysis-reason">Waiting for neural network prediction...</p>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3>Signal Probabilities</h3>
+            <span id="signal-latency" class="badge-muted">Softmax</span>
+          </div>
+          <div id="signal-bars" class="prob-bars">
+            <div class="prob-row">
+              <span class="prob-name bullish">LONG</span>
+              <div class="prob-track"><div id="bar-long" class="prob-fill bullish" style="width:0%"></div></div>
+              <span id="val-long" class="prob-val">--</span>
+            </div>
+            <div class="prob-row">
+              <span class="prob-name neutral">HOLD</span>
+              <div class="prob-track"><div id="bar-hold" class="prob-fill neutral" style="width:0%"></div></div>
+              <span id="val-hold" class="prob-val">--</span>
+            </div>
+            <div class="prob-row">
+              <span class="prob-name bearish">SHORT</span>
+              <div class="prob-track"><div id="bar-short" class="prob-fill bearish" style="width:0%"></div></div>
+              <span id="val-short" class="prob-val">--</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3>Models &amp; Alert Streak</h3>
+            <span id="alert-streak-badge" class="badge-muted">0/0</span>
+          </div>
+          <div id="nn-health-list" class="health-list">
+            <div class="empty-state-sm">No models configured</div>
+          </div>
+          <div id="asset-error-banner" class="error-banner hidden"></div>
+        </section>
+
+        <section class="card alerts-card">
+          <div class="card-header">
+            <h3>Alerts</h3>
+            <div class="alert-filters">
+              <button id="btn-alerts-unack" class="mini-btn active" type="button">Unread</button>
+              <button id="btn-alerts-all" class="mini-btn" type="button">All</button>
+            </div>
+          </div>
+          <div id="alerts-list" class="alerts-list">
+            <div class="empty-state-sm">No alerts triggered yet</div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/static/chart.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
