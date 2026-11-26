@@ -34,7 +34,7 @@ Supports all four per-asset model combinations cleanly (`extra_models` outputs a
 1. **Dual-Model Cross-Confirmation (`candle_predictor` + `signal_classifier`):** Requires `signal.best_probability >= min_signal_confidence`, rejects active directional contradictions and moves with `|expected_move_pct| < min_expected_move_pct`, estimates TP/SL from the projected OHLC path (with Triple-Barrier stop floor if predicted drawdown is zero), and enforces `risk_reward >= min_risk_reward`.
 2. **Candle Predictor Only:** Evaluates `expected_move_pct` against `min_expected_move_pct`, computes directional consistency across all $H$ bars and R:R, and produces an explicit heuristic confidence score.
 3. **Signal Classifier Only:** Evaluates calibrated Softmax probability against `min_signal_confidence` and derives TP/SL and R:R from the asset's `triple_barrier` parameters (`0 < pct < 1`).
-4. **No Primary Models Enabled:** Emits neutral `HOLD` (for charting-only macro assets such as `btc_1w`).
+4. **No Primary Models Enabled:** Emits neutral `HOLD` (for charting-only assets).
 
 ---
 

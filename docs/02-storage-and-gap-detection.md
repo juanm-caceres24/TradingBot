@@ -7,7 +7,7 @@ This document describes the local persistence layer in `src/tradingbot/storage/`
 ## 1. Design Philosophy
 
 - **Raw OHLCV only in the database:** `candles` stores exclusively raw market bars (`open`, `high`, `low`, `close`, `volume`, timestamps, and `is_closed`). Technical indicators are computed dynamically by the indicator engine so adding or editing indicators never requires database migrations or re-downloading historical data.
-- **Multi-asset & multi-timeframe native:** All assets and timeframes (e.g., `BTCUSDT 1h`, `BTCUSDT 1w`, `NVDA 1h`) coexist inside a single local SQLite file in gitignored `data/` (e.g. `data/market.db`).
+- **Multi-asset & multi-timeframe native:** All assets and timeframes (e.g., `BTCUSDT 1h`, `BTCUSDT 1d`, `NVDA 1h`) coexist inside a single local SQLite file in gitignored `data/` (e.g. `data/market.db`).
 - **Zero external database servers:** Uses Python's built-in `sqlite3` module with safe additive schema migration support.
 - **Abstract contract (`CandleStore`):** All higher-level services depend on the `CandleStore` ABC (`src/tradingbot/storage/base.py`), keeping future storage backends pluggable.
 

@@ -252,7 +252,7 @@ class TestSyncService(unittest.TestCase):
         self.assertIsNot(service.get_provider(a1.provider), service.get_provider(a2.provider))
 
         # Weekly 1w backfill must upsert 5 Monday bars and record 0 false empty ranges
-        weekly_asset = _make_synthetic_asset("btc_1w", timeframe="1w", max_candles=50)
+        weekly_asset = _make_synthetic_asset("eth_1w", timeframe="1w", max_candles=50)
         rep = service.backfill_asset(weekly_asset, start_ms=mon_start, end_ms=mon_start + 5 * week_ms)
         self.assertEqual(rep.candles_upserted, 5)
         self.assertEqual(rep.empty_ranges_recorded, 0)

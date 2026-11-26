@@ -2,10 +2,10 @@
 
 A modular, transparent, zero-hardcode **Python** multi-asset market data collector, technical indicator engine, dataset generator, neural-network prediction client, alert API, and 24/7 web dashboard designed to integrate seamlessly with the C++17 **`NeuralNetwork` (`libnn` v0.6.0)** training engine and HTTP inference server.
 
-## Features (`v0.6.3`)
+## Features (`v0.6.4`)
 
 - **Zero External Dependencies (Python 3.11+ Standard Library Only):** Runs out of the box on any Linux PC, 24/7 server, or Raspberry Pi with zero `pip install`, zero Node.js build tools, and zero external CDNs.
-- **Multi-Asset & Multi-Timeframe Architecture:** Manage independent logical assets (ships ready with `btc_1h`, `btc_4h`, `btc_1d`, and optional macro `btc_1w`, easily extensible to `nvda_1h`, `sp500_1d`, etc.) via strictly validated modular JSON files (`configs/bot.json`, `configs/assets/*.json`, `configs/providers/*.json`).
+- **Multi-Asset & Multi-Timeframe Architecture:** Manage independent logical assets (ships ready with `btc_1h`, `btc_4h`, and `btc_1d`, easily extensible to `nvda_1h`, `sp500_1d`, etc.) via strictly validated modular JSON files (`configs/bot.json`, `configs/assets/*.json`, `configs/providers/*.json`).
 - **Local SQLite Database & Automatic Gap Healing:** Clustered `WITHOUT ROWID` SQLite storage (`data/market.db`, WAL mode) with Monday-aligned `1w` support, head/internal/tail gap detection, unclosed-candle crash recovery, verified empty `sync_ranges`, prediction audit log, and cursor-based `alerts` table.
 - **Declarative REST & Deterministic Synthetic Providers:** JSON-driven `GenericRestProvider` (Binance Spot preset + generic REST/broker mapping with rate-limiting & retry backoff) and O(1) chunk-invariant `SyntheticProvider`.
 - **Extensible Indicator Engine & `NeuralNetwork` v0.6.0 Dataset Exporter:** Plugin registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, LazyBear `SqueezeMomentum`), strict warm-up exclusion, window-relative normalization, Triple Barrier labeling, `feature_schema.json` SHA-256 fingerprinting, `%.9g` CSV export, and strictly valid `nn_config.json` generation.
