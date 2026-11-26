@@ -26,7 +26,11 @@ _MAX_CLIENT_FRAME_BYTES = 65_536
 
 def compute_accept_key(sec_websocket_key: str) -> str:
     """Compute RFC 6455 Sec-WebSocket-Accept header value."""
-    digest = hashlib.sha1((sec_websocket_key.strip() + _WS_MAGIC_GUID).encode("ascii")).digest()
+    try:
+        key_bytes = (sec_websocket_key.strip() + _WS_MAGIC_GUID).encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Sec-WebSocket-Key must be valid ASCII") from exc
+    digest = hashlib.sha1(key_bytes).digest()
     return base64.b64encode(digest).decode("ascii")
 
 
