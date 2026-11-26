@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tradingbot"
-version = "0.1.1"
+version = "0.2.0"
 description = "Modular multi-asset market data collector, indicator engine, neural-network forecasting client, alert API, and 24/7 web dashboard."
 readme = "README.md"
 requires-python = ">=3.11"
