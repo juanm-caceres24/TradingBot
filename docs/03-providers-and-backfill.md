@@ -78,7 +78,7 @@ Configured via `configs/providers/synthetic.json`:
 # Ensure at least N closed candles exist per asset (useful before first dataset export)
 ./scripts/backfill.sh configs/bot.json --sync-now --min-candles 5000
 
-# Backfill all configured assets (including disabled ones) or a specific disabled asset
+# Backfill all configured assets (including any disabled ones) or force-recheck a specific asset
 ./scripts/backfill.sh configs/bot.json --sync-now --all-assets
 ./scripts/backfill.sh configs/bot.json --asset btc_1d --start 2020-01-01 --force-recheck
 ```
