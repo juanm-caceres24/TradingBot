@@ -8,7 +8,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -340,18 +340,19 @@ class TestBackfillAppCLI(unittest.TestCase):
                 self.assertEqual(store.count_candles("synthetic", "ETHUSDT", "1h"), 12)
 
             # 4) Controlled CLI error exit codes
-            self.assertEqual(
-                backfill_app.main([str(bot_cfg_path), "--sync-now", "--start", "2025-01-01"]),
-                2,
-            )
-            self.assertEqual(
-                backfill_app.main([str(bot_cfg_path), "--start", "2025-01-05", "--end", "2025-01-01"]),
-                2,
-            )
-            self.assertEqual(
-                backfill_app.main([str(bot_cfg_path), "--asset", "nonexistent", "--sync-now"]),
-                1,
-            )
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    backfill_app.main([str(bot_cfg_path), "--sync-now", "--start", "2025-01-01"]),
+                    2,
+                )
+                self.assertEqual(
+                    backfill_app.main([str(bot_cfg_path), "--start", "2025-01-05", "--end", "2025-01-01"]),
+                    2,
+                )
+                self.assertEqual(
+                    backfill_app.main([str(bot_cfg_path), "--asset", "nonexistent", "--sync-now"]),
+                    1,
+                )
 
 
 if __name__ == "__main__":
