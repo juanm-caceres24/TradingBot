@@ -19,16 +19,23 @@
   },
   "indicators": [
     {
-      "id": "sma_20",
-      "type": "sma",
+      "id": "ema_20",
+      "type": "ema",
       "params": { "period": 20 },
       "use_in_nn": true,
       "plot": "overlay"
     },
     {
-      "id": "ema_50",
+      "id": "ema_55",
       "type": "ema",
-      "params": { "period": 50 },
+      "params": { "period": 55 },
+      "use_in_nn": true,
+      "plot": "overlay"
+    },
+    {
+      "id": "sma_200",
+      "type": "sma",
+      "params": { "period": 200 },
       "use_in_nn": true,
       "plot": "overlay"
     },
@@ -38,13 +45,6 @@
       "params": { "period": 14 },
       "use_in_nn": true,
       "plot": "subchart"
-    },
-    {
-      "id": "atr_14",
-      "type": "atr",
-      "params": { "period": 14 },
-      "use_in_nn": true,
-      "plot": "none"
     },
     {
       "id": "squeeze_20",
@@ -61,14 +61,15 @@
     }
   ],
   "features": {
-    "input_window": 31,
-    "forecast_horizon": 7,
+    "input_window": 24,
+    "forecast_horizon": 6,
     "stride": 1,
     "normalization": "atr_relative",
     "atr_period": 14,
     "triple_barrier": {
-      "take_profit_pct": 0.015,
-      "stop_loss_pct": 0.01
+      "mode": "atr_multiple",
+      "take_profit_atr": 1.5,
+      "stop_loss_atr": 1.0
     }
   },
   "neural_networks": {
@@ -81,7 +82,7 @@
       "schema_path": "data/btc_1h_candles_schema.json"
     },
     "signal_classifier": {
-      "enabled": false,
+      "enabled": true,
       "host": "127.0.0.1",
       "port": 8081,
       "schema_path": "data/btc_1h_signal_schema.json"

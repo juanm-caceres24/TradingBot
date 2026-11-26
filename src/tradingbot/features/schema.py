@@ -40,7 +40,7 @@ class FeatureSchema:
     per_bar_features: tuple[str, ...]
     target_columns: tuple[str, ...]
     indicators: tuple[dict[str, Any], ...]
-    triple_barrier: dict[str, float] | None
+    triple_barrier: dict[str, Any] | None
     feature_hash: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,7 +76,7 @@ def compute_feature_hash(
     per_bar_features: tuple[str, ...],
     target_columns: tuple[str, ...],
     indicators: tuple[dict[str, Any], ...],
-    triple_barrier: dict[str, float] | None,
+    triple_barrier: dict[str, Any] | None,
 ) -> str:
     """Compute a deterministic SHA-256 fingerprint of the feature & target definition."""
     payload = {
@@ -161,11 +161,19 @@ def load_feature_schema(path: str | Path) -> FeatureSchema:
         per_bar = tuple(str(x) for x in raw["per_bar_features"])
         targets = tuple(str(x) for x in raw["target_columns"])
         indicators = tuple(dict(ind) for ind in raw["indicators"])
-        tb = (
-            {str(k): float(v) for k, v in raw["triple_barrier"].items()}
-            if raw["triple_barrier"] is not None
-            else None
-        )
+        tb: dict[str, Any] | None = None
+        if raw["triple_barrier"] is not None:
+            tb = {}
+            for k, v in raw["triple_barrier"].items():
+                key = str(k)
+                if key == "mode":
+                    if not isinstance(v, str) or not v.strip():
+                        raise SchemaError("Feature schema 'triple_barrier.mode' must be a string")
+                    tb[key] = v
+                else:
+                    if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        raise SchemaError(f"Feature schema 'triple_barrier.{key}' must be a number")
+                    tb[key] = float(v)
         schema = FeatureSchema(
             schema_version=int(version_val),
             asset_id=str(raw["asset_id"]),

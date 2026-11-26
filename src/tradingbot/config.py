@@ -36,6 +36,7 @@ _VALID_ORDERS = frozenset({"asc", "desc"})
 _VALID_RUNTIME_MODES = frozenset({"sync_live", "backfill", "live_only", "replay"})
 _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
+_VALID_TB_MODES = frozenset({"pct", "atr_multiple"})
 _VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
 
 
@@ -263,8 +264,25 @@ class IndicatorConfig:
 
 @dataclass(frozen=True)
 class TripleBarrierConfig:
-    take_profit_pct: float
-    stop_loss_pct: float
+    take_profit_pct: float = 0.0
+    stop_loss_pct: float = 0.0
+    mode: str = "pct"
+    take_profit_atr: float = 0.0
+    stop_loss_atr: float = 0.0
+
+    def barrier_distances(
+        self, anchor_close: float, atr: float | None = None
+    ) -> tuple[float, float]:
+        """Return absolute (tp_distance, sl_distance) in price units."""
+        if self.mode == "atr_multiple":
+            if atr is None or not math.isfinite(atr) or atr <= 0.0:
+                raise ValueError(
+                    "atr_multiple triple_barrier requires a positive finite ATR value"
+                )
+            tp_dist = self.take_profit_atr * atr
+            sl_dist = self.stop_loss_atr * atr
+            return tp_dist, sl_dist
+        return anchor_close * self.take_profit_pct, anchor_close * self.stop_loss_pct
 
 
 @dataclass(frozen=True)
@@ -913,21 +931,43 @@ def parse_asset_dict(
     )
     tb_sec = f"{f_sec}.triple_barrier"
     tb_raw = _expect_dict(_require_key(f_raw, "triple_barrier", f_sec), tb_sec)
-    _reject_unknown_keys(tb_raw, frozenset({"take_profit_pct", "stop_loss_pct"}), tb_sec)
-    triple_barrier = TripleBarrierConfig(
-        take_profit_pct=_expect_float(
-            _require_key(tb_raw, "take_profit_pct", tb_sec),
-            f"{tb_sec}.take_profit_pct",
-            exclusive_min=0.0,
-            exclusive_max=1.0,
-        ),
-        stop_loss_pct=_expect_float(
-            _require_key(tb_raw, "stop_loss_pct", tb_sec),
-            f"{tb_sec}.stop_loss_pct",
-            exclusive_min=0.0,
-            exclusive_max=1.0,
-        ),
-    )
+    tb_mode = _expect_enum(tb_raw.get("mode", "pct"), f"{tb_sec}.mode", _VALID_TB_MODES)
+    if tb_mode == "pct":
+        _reject_unknown_keys(
+            tb_raw, frozenset({"mode", "take_profit_pct", "stop_loss_pct"}), tb_sec
+        )
+        triple_barrier = TripleBarrierConfig(
+            mode="pct",
+            take_profit_pct=_expect_float(
+                _require_key(tb_raw, "take_profit_pct", tb_sec),
+                f"{tb_sec}.take_profit_pct",
+                exclusive_min=0.0,
+                exclusive_max=1.0,
+            ),
+            stop_loss_pct=_expect_float(
+                _require_key(tb_raw, "stop_loss_pct", tb_sec),
+                f"{tb_sec}.stop_loss_pct",
+                exclusive_min=0.0,
+                exclusive_max=1.0,
+            ),
+        )
+    else:
+        _reject_unknown_keys(
+            tb_raw, frozenset({"mode", "take_profit_atr", "stop_loss_atr"}), tb_sec
+        )
+        triple_barrier = TripleBarrierConfig(
+            mode="atr_multiple",
+            take_profit_atr=_expect_float(
+                _require_key(tb_raw, "take_profit_atr", tb_sec),
+                f"{tb_sec}.take_profit_atr",
+                exclusive_min=0.0,
+            ),
+            stop_loss_atr=_expect_float(
+                _require_key(tb_raw, "stop_loss_atr", tb_sec),
+                f"{tb_sec}.stop_loss_atr",
+                exclusive_min=0.0,
+            ),
+        )
     features = FeaturesConfig(
         input_window=_expect_int(_require_key(f_raw, "input_window", f_sec), f"{f_sec}.input_window", min_value=1),
         forecast_horizon=_expect_int(_require_key(f_raw, "forecast_horizon", f_sec), f"{f_sec}.forecast_horizon", min_value=1),
@@ -1060,14 +1100,25 @@ def parse_config_dict(
             frozenset({"output_dir", "dataset_path_prefix", "model_save_dir"}),
             "export",
         )
+        export_out_dir = _expect_str(
+            e_raw.get("output_dir", "data/exports"), "export.output_dir", allow_empty=False
+        )
+        export_ds_prefix = _expect_str(
+            e_raw.get("dataset_path_prefix", ""), "export.dataset_path_prefix", allow_empty=True
+        )
+        if export_ds_prefix and not export_ds_prefix.strip().rstrip("/"):
+            raise ConfigError(
+                "'export.dataset_path_prefix' must be empty or a valid non-root path prefix"
+            )
+        export_model_dir = _expect_str(
+            e_raw.get("model_save_dir", "models"), "export.model_save_dir", allow_empty=False
+        )
+        if not export_model_dir.strip().rstrip("/"):
+            raise ConfigError("'export.model_save_dir' must be a valid non-empty directory path")
         export_cfg = ExportConfig(
-            output_dir=_expect_str(e_raw.get("output_dir", "data/exports"), "export.output_dir", allow_empty=False),
-            dataset_path_prefix=_expect_str(
-                e_raw.get("dataset_path_prefix", ""), "export.dataset_path_prefix", allow_empty=True
-            ),
-            model_save_dir=_expect_str(
-                e_raw.get("model_save_dir", "models"), "export.model_save_dir", allow_empty=False
-            ),
+            output_dir=export_out_dir,
+            dataset_path_prefix=export_ds_prefix,
+            model_save_dir=export_model_dir,
         )
     else:
         export_cfg = ExportConfig()

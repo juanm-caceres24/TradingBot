@@ -211,6 +211,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.synthetic_candles < 0:
         print("Error: --synthetic-candles must be >= 0.", file=sys.stderr)
         return 2
+    if args.output_dir is not None and not args.output_dir.strip():
+        print("Error: --output-dir must be a non-empty path.", file=sys.stderr)
+        return 2
+    if args.model_save_dir is not None and not args.model_save_dir.strip().rstrip("/"):
+        print("Error: --model-save-dir must be a valid non-empty directory path.", file=sys.stderr)
+        return 2
+    if (
+        args.dataset_path_prefix is not None
+        and args.dataset_path_prefix != ""
+        and not args.dataset_path_prefix.strip().rstrip("/")
+    ):
+        print(
+            "Error: --dataset-path-prefix must be empty or a valid non-root path prefix.",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         cfg = load_config(args.config)
@@ -319,13 +335,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"    nn_config: {summary.nn_config_path}")
                     if summary.samples_written > 0:
                         compact_flag = " --compact" if kind == "signal" else ""
+                        clean_prefix = effective_dataset_prefix.strip().rstrip("/")
+                        if clean_prefix:
+                            cfg_arg = f"configs/{summary.nn_config_path.name}"
+                            print(
+                                f"    note:      copy CSV to NeuralNetwork/{clean_prefix}/ "
+                                f"and config to NeuralNetwork/configs/"
+                            )
+                        else:
+                            cfg_arg = str(summary.nn_config_path.resolve())
                         print(
                             f"    train cmd: ./build/release/apps/train_app "
-                            f"{summary.nn_config_path.resolve()}{compact_flag}"
+                            f"{cfg_arg}{compact_flag}"
                         )
                         print(
                             f"    serve cmd: ./build/release/apps/server_app "
-                            f"{summary.nn_config_path.resolve()}"
+                            f"{cfg_arg}"
                         )
         finally:
             if store is not None:

@@ -123,19 +123,19 @@ class TestWebhookDispatcher(unittest.TestCase):
 
 class TestBotOrchestrator(unittest.TestCase):
     def test_sync_live_multi_asset_poll_prediction_alert_and_webhook(self) -> None:
-        # 7 bullish relative candles + strong LONG signal
+        # 6 bullish relative candles + strong LONG signal
         bullish_rel: list[float] = []
-        for step in range(1, 8):
+        for step in range(1, 7):
             base = 0.30 * step
             bullish_rel.extend([base - 0.05, base + 0.35, base - 0.15, base + 0.12])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(341, bullish_rel, latency_us=10)
-        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.08, 0.84, 0.08], latency_us=6)
+        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=10)
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.08, 0.84, 0.08], latency_us=6)
         wh_srv, wh_th, wh_port, wh_received = _start_webhook_receiver()
 
         try:
             start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
-            clock = {"now": start_ms + 120 * HOUR_MS + 10_000}
+            clock = {"now": start_ms + 300 * HOUR_MS + 10_000}
             mono = {"t": 100.0}
 
             btc_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -239,7 +239,8 @@ class TestBotOrchestrator(unittest.TestCase):
                 assert btc_snap is not None
                 detail = btc_snap.detail_dict(visible_candles=70)
                 self.assertEqual(len(detail["candles"]), 70)
-                self.assertEqual(len(detail["indicators"]["sma_20"]["value"]), 70)
+                self.assertEqual(len(detail["indicators"]["ema_20"]["value"]), 70)
+                self.assertEqual(len(detail["indicators"]["sma_200"]["value"]), 70)
                 self.assertEqual(detail["prediction"]["analysis"]["action"], "LONG")
         finally:
             for srv, th in ((srv_c, th_c), (srv_s, th_s), (wh_srv, wh_th)):
@@ -310,10 +311,10 @@ class TestBotOrchestrator(unittest.TestCase):
         self.assertNotIn("not set", results[1].error or "")
 
     def test_runtime_hardening_gap_error_non_persist_open_candle_restart_and_empty_loop(self) -> None:
-        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.05, 0.85, 0.10], latency_us=5)
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.05, 0.85, 0.10], latency_us=5)
         try:
             start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
-            clock = {"now": start_ms + 120 * HOUR_MS + 10_000}
+            clock = {"now": start_ms + 300 * HOUR_MS + 10_000}
             mono = {"t": 100.0}
 
             def _make_cfg(

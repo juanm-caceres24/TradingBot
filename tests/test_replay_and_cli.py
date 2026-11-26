@@ -36,14 +36,14 @@ def _load_app(name: str, path: Path) -> Any:
 
 class TestReplayAndCLIApps(unittest.TestCase):
     def test_replay_engine_metrics_alerts_and_cli_apps(self) -> None:
-        # 7 bullish relative OHLC candles + strong LONG probability
+        # 6 bullish relative OHLC candles + strong LONG probability
         bullish_rel: list[float] = []
-        for step in range(1, 8):
+        for step in range(1, 7):
             base = 0.25 * step
             bullish_rel.extend([base - 0.05, base + 0.30, base - 0.15, base + 0.10])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(341, bullish_rel, latency_us=9)
-        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.10, 0.80, 0.10], latency_us=5)
+        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=9)
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.10, 0.80, 0.10], latency_us=5)
 
         try:
             raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -68,12 +68,12 @@ class TestReplayAndCLIApps(unittest.TestCase):
 
             asset = parse_asset_dict(raw_asset, base_dir=BTC_1H_ASSET_PATH.parent)
             start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
-            end_ms = start_ms + 95 * HOUR_MS
+            end_ms = start_ms + 238 * HOUR_MS
             provider = create_provider(asset.provider, clock_ms=lambda: end_ms + HOUR_MS)
             assert isinstance(provider, SyntheticProvider)
-            candles = provider.fetch_candles("BTCUSDT", "1h", start_ms=start_ms, end_ms=end_ms, limit=95)
+            candles = provider.fetch_candles("BTCUSDT", "1h", start_ms=start_ms, end_ms=end_ms, limit=238)
 
-            # 1) Direct ReplayEngine test (95 bars -> first_anchor=79 -> 16 bars evaluated)
+            # 1) Direct ReplayEngine test (238 bars -> first_anchor=222 -> 16 bars evaluated)
             bus = EventBus()
             bus_events: list[dict[str, Any]] = []
             bus.subscribe(bus_events.append)
