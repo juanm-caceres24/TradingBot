@@ -2,11 +2,11 @@
 
 A modular, transparent, zero-hardcode **Python** multi-asset market data collector, technical indicator engine, dataset generator, neural-network prediction client, alert API, and 24/7 web dashboard designed to integrate seamlessly with the C++17 **`NeuralNetwork` (`libnn` v0.6.0)** training engine and HTTP inference server.
 
-## Features (`v0.6.1`)
+## Features (`v0.6.2`)
 
 - **Zero External Dependencies (Python 3.11+ Standard Library Only):** Runs out of the box on any Linux PC, 24/7 server, or Raspberry Pi with zero `pip install`, zero Node.js build tools, and zero external CDNs.
 - **Multi-Asset & Multi-Timeframe Architecture:** Manage independent logical assets (ships ready with `btc_1h`, `btc_4h`, `btc_1d`, and optional macro `btc_1w`, easily extensible to `nvda_1h`, `sp500_1d`, etc.) via strictly validated modular JSON files (`configs/bot.json`, `configs/assets/*.json`, `configs/providers/*.json`).
-- **Local SQLite Database & Automatic Gap Healing:** Clustered `WITHOUT ROWID` SQLite storage (`data/market.db`, WAL mode) with head/internal/tail gap detection, unclosed-candle crash recovery, verified empty `sync_ranges`, prediction audit log, and cursor-based `alerts` table.
+- **Local SQLite Database & Automatic Gap Healing:** Clustered `WITHOUT ROWID` SQLite storage (`data/market.db`, WAL mode) with Monday-aligned `1w` support, head/internal/tail gap detection, unclosed-candle crash recovery, verified empty `sync_ranges`, prediction audit log, and cursor-based `alerts` table.
 - **Declarative REST & Deterministic Synthetic Providers:** JSON-driven `GenericRestProvider` (Binance Spot preset + generic REST/broker mapping with rate-limiting & retry backoff) and O(1) chunk-invariant `SyntheticProvider`.
 - **Extensible Indicator Engine & `NeuralNetwork` v0.6.0 Dataset Exporter:** Plugin registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, LazyBear `SqueezeMomentum`), strict warm-up exclusion, window-relative normalization, Triple Barrier labeling, `feature_schema.json` SHA-256 fingerprinting, `%.9g` CSV export, and strictly valid `nn_config.json` generation.
 - **Multi-Model `NeuralNetwork` Client, Trade Analysis & Alert Engine:** Consumes `server_app` (`/health`, `/info`, `/predict`), reconstructs translucent predicted OHLC candles, performs dual-model cross-confirmation, evaluates stateful alert rules (`consecutive_candles`, `cooldown_candles`), and dispatches outbound webhooks.
@@ -30,7 +30,7 @@ A modular, transparent, zero-hardcode **Python** multi-asset market data collect
 # 2) Export CSV datasets + NeuralNetwork v0.6.0 nn_config.json (SQLite or offline synthetic)
 ./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --synthetic-candles 2000
 
-# 3) Replay historical candles against running NeuralNetwork server_app(s)
+# 3) Replay historical candles (requires stored candles from step 1 and running server_app on configured port)
 ./scripts/replay.sh configs/bot.json --asset btc_1h --verbose
 
 # 4) Run 24/7 continuous live collector + Web Dashboard & Alerts API (LAN / Tailscale)

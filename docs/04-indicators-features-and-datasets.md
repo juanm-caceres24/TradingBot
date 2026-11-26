@@ -32,11 +32,12 @@ All indicators inherit from `BaseIndicator` and register in `INDICATOR_REGISTRY`
 
 ## 2. Window-Relative Feature Normalization (`FeaturePipeline`)
 
-Raw prices are non-stationary across years and assets and are never fed directly to the MLP. For every input window of $W$ bars ending at anchor bar $t$ with anchor close $C_t$ and local scale $S_t$ (`ATR_t` for `atr_relative` or $C_t$ for `pct_relative`):
+Raw prices are non-stationary across years and assets and are never fed directly to the MLP. For every input window of $W$ bars ending at anchor bar $t$ with anchor close $C_t$ and local scale $S_t$ (`max(ATR_t, C_t * 1e-6)` for `atr_relative`, or $C_t$ for `pct_relative`):
 
 - **Base per-bar OHLCV features (5):**
   - `(open - C_t) / S_t`, `(high - C_t) / S_t`, `(low - C_t) / S_t`, `(close - C_t) / S_t`
-  - `log(1 + volume / window_mean_volume)`
+  - `log(1 + volume / max(window_mean_volume, 1e-9))`
+- **Contiguity guard:** For `market_schedule: "24/7"`, windows containing missing timestamp gaps (either in the input window or the forecast horizon) are strictly skipped; for `"sessions"` markets, weekend/holiday gaps are permitted.
 - **Indicator features (per `use_in_nn: true` indicator):** normalized according to `nn_scale_kind`:
   - `price_level`: `(val - C_t) / S_t`
   - `price_delta`: `val / S_t`
@@ -71,10 +72,13 @@ For `configs/assets/btc_1h.json` (`W = 31`, 5 base features + 6 indicator output
 # 1) Generate an offline synthetic test dataset + nn_config.json (2000 bars, zero API needed)
 ./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --synthetic-candles 2000
 
-# 2) Export from real SQLite candles stored by backfill_app
-./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --output-dir data/exports
+# 2) Export from real SQLite candles stored by backfill_app into data/exports
+#    (add --update-asset-schema to also update the asset's configured schema_path)
+./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --output-dir data/exports --update-asset-schema
 
 # 3) Train and serve directly inside your C++17 NeuralNetwork repository
+#    (use --compact for multiclass signal models)
 ./build/release/apps/train_app /abs/path/to/data/exports/btc_1h_candles_nn_config.json
+./build/release/apps/train_app /abs/path/to/data/exports/btc_1h_signal_nn_config.json --compact
 ./build/release/apps/server_app /abs/path/to/data/exports/btc_1h_candles_nn_config.json
 ```

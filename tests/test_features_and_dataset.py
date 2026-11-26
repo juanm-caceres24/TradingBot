@@ -22,6 +22,7 @@ from tradingbot.dataset import (
 from tradingbot.features import (
     FeaturePipeline,
     InsufficientDataError,
+    SchemaError,
     load_feature_schema,
 )
 from tradingbot.models import Candle, parse_iso_to_ms
@@ -161,6 +162,39 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
         self.assertNotEqual(s1.feature_hash, s2.feature_hash)
         self.assertEqual(s2.input_size, s1.input_size + 3 * 31)
 
+    def test_pct_relative_stride_24_7_gap_exclusion_and_schema_integrity(self) -> None:
+        raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        raw["features"]["normalization"] = "pct_relative"
+        raw["features"]["stride"] = 2
+        asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
+        pipeline = FeaturePipeline(asset)
+        bars = _make_synthetic_bars(120)
+
+        samples = list(pipeline.iter_training_samples(bars, "candles"))
+        # first_anchor = 49 + 31 - 1 = 79, last_anchor_excl = 120 - 7 = 113, stride = 2 -> range(79, 113, 2) = 17
+        self.assertEqual(len(samples), 17)
+
+        # Introduce a timestamp gap in 24/7 schedule -> windows spanning the gap are excluded!
+        gapped = bars[:90] + bars[92:]
+        gapped_samples = list(pipeline.iter_training_samples(gapped, "candles"))
+        self.assertLess(len(gapped_samples), len(samples))
+
+        # Corrupted schema_version=True or tampered feature_hash rejected with SchemaError
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = Path(tmp) / "bad_schema.json"
+            schema_dict = pipeline.build_schema("candles").to_dict()
+            bad_bool = copy.deepcopy(schema_dict)
+            bad_bool["schema_version"] = True
+            sp.write_text(json.dumps(bad_bool), encoding="utf-8")
+            with self.assertRaises(SchemaError):
+                load_feature_schema(sp)
+
+            tampered = copy.deepcopy(schema_dict)
+            tampered["feature_hash"] = "0" * 64
+            sp.write_text(json.dumps(tampered), encoding="utf-8")
+            with self.assertRaises(SchemaError):
+                load_feature_schema(sp)
+
 
 class TestDatasetExporterAndNNConfig(unittest.TestCase):
     def test_export_candles_and_signal_libnn_v060_parity(self) -> None:
@@ -295,6 +329,16 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertEqual(rc2, 0)
             self.assertIn("[candles] samples=44", buf2.getvalue())
             self.assertTrue((out_db / "btc_1h_candles_schema.json").is_file())
+
+            # CLI validation errors
+            self.assertEqual(
+                export_app.main([str(bot_cfg_path), "--synthetic-candles", "-5"]),
+                2,
+            )
+            self.assertEqual(
+                export_app.main([str(bot_cfg_path), "--start", "2025-02-01", "--end", "2025-01-01"]),
+                2,
+            )
 
 
 if __name__ == "__main__":
