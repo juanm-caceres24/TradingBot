@@ -148,6 +148,47 @@ class TestReconstructionAndTradeAnalyzer(unittest.TestCase):
         self.assertAlmostEqual(res_s_short.estimated_tp or 0.0, 98.0)
         self.assertAlmostEqual(res_s_short.estimated_sl or 0.0, 101.0)
 
+        # ATR-multiple Triple Barrier in Signal-only mode (ATR=2.0, TP=1.5x=+3.0, SL=1.0x=-2.0)
+        atr_analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.60,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.01,
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        res_atr = atr_analyzer.analyze(
+            100.0,
+            predicted_candles=(),
+            signal=SignalPrediction(hold_prob=0.10, long_prob=0.80, short_prob=0.10),
+            anchor_atr=2.0,
+        )
+        self.assertEqual(res_atr.action, "LONG")
+        self.assertAlmostEqual(res_atr.estimated_tp or 0.0, 103.0)
+        self.assertAlmostEqual(res_atr.estimated_sl or 0.0, 98.0)
+        self.assertAlmostEqual(res_atr.risk_reward or 0.0, 1.5)
+        self.assertAlmostEqual(res_atr.expected_move_pct, 0.03)
+
+        # Extreme ATR on SHORT (take_profit_atr * atr >= anchor_close) and sub-cent asset
+        # must floor prices strictly > 0 instead of raising ValueError
+        res_atr_short_extreme = atr_analyzer.analyze(
+            100.0,
+            predicted_candles=(),
+            signal=SignalPrediction(hold_prob=0.10, long_prob=0.10, short_prob=0.80),
+            anchor_atr=100.0,
+        )
+        self.assertGreater(res_atr_short_extreme.estimated_tp or 0.0, 0.0)
+        self.assertGreater(res_atr_short_extreme.estimated_sl or 0.0, 100.0)
+
+        res_subcent = atr_analyzer.analyze(
+            0.0005,
+            predicted_candles=(PredictedCandle(1, HOUR_MS, 0.0005, 0.0006, 0.0005, 0.00058, 0.9),),
+            signal=SignalPrediction(hold_prob=0.10, long_prob=0.80, short_prob=0.10),
+            anchor_atr=0.001,
+        )
+        self.assertGreater(res_subcent.estimated_sl or 0.0, 0.0)
+        self.assertGreater(res_subcent.estimated_tp or 0.0, 0.0)
+
         # Dual-model rejection when expected_move_pct < min_expected_move_pct despite strong signal & good R:R
         tiny_move_candles = (
             PredictedCandle(1, HOUR_MS, 100.0, 100.6, 99.9, 100.4, 0.9),
@@ -309,15 +350,15 @@ class TestAlertEvaluator(unittest.TestCase):
 
 class TestEndToEndPredictionEngine(unittest.TestCase):
     def test_prediction_engine_with_dual_mock_nn_servers_and_alerts(self) -> None:
-        # 7 bullish relative OHLC candles (rising +0.3 .. +2.1 ATR above anchor_close)
+        # 6 bullish relative OHLC candles (rising +0.25 .. +1.5 ATR above anchor_close)
         bullish_rel: list[float] = []
-        for step in range(1, 8):
+        for step in range(1, 7):
             base = 0.25 * step
             bullish_rel.extend([base - 0.05, base + 0.30, base - 0.15, base + 0.10])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(341, bullish_rel, latency_us=12)
-        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.10, 0.80, 0.10], latency_us=8)
-        srv_e, th_e, port_e = _make_mock_nn_server(341, [0.33, 0.67], latency_us=4)
+        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=12)
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.10, 0.80, 0.10], latency_us=8)
+        srv_e, th_e, port_e = _make_mock_nn_server(264, [0.33, 0.67], latency_us=4)
 
         try:
             raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -347,10 +388,10 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
             asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
 
             start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
-            end_ms = start_ms + 90 * HOUR_MS
+            end_ms = start_ms + 240 * HOUR_MS
             provider = create_provider(asset.provider, clock_ms=lambda: end_ms + HOUR_MS)
             assert isinstance(provider, SyntheticProvider)
-            candles = provider.fetch_candles("BTCUSDT", "1h", start_ms=start_ms, end_ms=end_ms, limit=90)
+            candles = provider.fetch_candles("BTCUSDT", "1h", start_ms=start_ms, end_ms=end_ms, limit=240)
 
             engine = PredictionEngine(asset, clock_ms=lambda: end_ms)
             infos = engine.verify_models()
@@ -358,7 +399,7 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
 
             evaluator = AlertEvaluator(asset, clock_ms=lambda: end_ms)
             snap1 = engine.predict(candles[:-1])
-            self.assertEqual(len(snap1.predicted_candles), 7)
+            self.assertEqual(len(snap1.predicted_candles), 6)
             self.assertEqual(snap1.extra_outputs.get("regime_head"), (0.33, 0.67))
             assert snap1.analysis is not None
             self.assertEqual(snap1.analysis.action, "LONG")
@@ -374,7 +415,7 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
             # Verify JSON serialization works cleanly including extra_outputs
             encoded = json.loads(snapshot_to_json(snap2))
             self.assertEqual(encoded["asset_id"], "btc_1h")
-            self.assertEqual(len(encoded["predicted_candles"]), 7)
+            self.assertEqual(len(encoded["predicted_candles"]), 6)
             self.assertEqual(encoded["analysis"]["action"], "LONG")
             self.assertEqual(encoded["extra_outputs"]["regime_head"], [0.33, 0.67])
         finally:

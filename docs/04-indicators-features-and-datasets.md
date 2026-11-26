@@ -19,7 +19,7 @@ All indicators inherit from `BaseIndicator` and register in `INDICATOR_REGISTRY`
 
 ### Strict Warm-up Contract
 - Indices `< warmup_period()` emit `None` so the Web UI can render all raw historical candles while starting each indicator line only once sufficient bars exist.
-- `FeaturePipeline` computes `max_warmup = max(nn_indicator_warmups, norm_atr_warmup)` and **strictly excludes** any candle or window with missing (`None`) or non-finite values from CSV exports and live NN inference.
+- `FeaturePipeline` computes `max_warmup = max(nn_indicator_warmups, atr_warmup)` (including `atr_period` whenever `normalization == "atr_relative"` or `triple_barrier.mode == "atr_multiple"`) and **strictly excludes** any candle or window with missing (`None`) or non-finite values from CSV exports and live NN inference.
 
 ### Adding a New Indicator Tomorrow
 1. Subclass `BaseIndicator` implementing `_validate_params()`, `warmup_period()`, `output_columns()`, `nn_scale_kind(col)`, and `compute(candles)` and call `register_indicator("my_ind", MyIndicator)`.
@@ -44,8 +44,8 @@ Raw prices are non-stationary across years and assets and are never fed directly
   - `rsi_0_100`: `(val - 50) / 50` in `[-1, +1]`
   - `bounded`: passed through directly (e.g., `squeeze_state ∈ {-1, 0, +1}`)
 
-For `configs/assets/btc_1h.json` (`W = 31`, 5 base features + 6 indicator outputs = 11 per bar):
-`input_size = 31 × 11 = 341`.
+For `configs/assets/btc_1h.json` (`W = 24`, `H = 6`, `max_warmup = 199` due to `sma_200` → `223` minimum candles for inference, 5 base features + 6 indicator outputs from `ema_20`, `ema_55`, `sma_200`, `rsi_14`, `squeeze_20` = 11 per bar):
+`input_size = 24 × 11 = 264` (`btc_4h` uses `24 → 6`; `btc_1d` uses `24 → 7`).
 
 ---
 
@@ -56,7 +56,7 @@ For `configs/assets/btc_1h.json` (`W = 31`, 5 base features + 6 indicator output
 - **`libnn` config:** `loss: "mse"`, output activation `"linear"`.
 
 ### Model B — Signal Classifier (`kind = "signal"`)
-- **Output (`3`):** one-hot `[HOLD, LONG, SHORT]` via conservative **Triple Barrier Labeling** over future bars `t+1 .. t+H` using `features.triple_barrier.{take_profit_pct, stop_loss_pct}` (if a bar touches both SL and TP simultaneously, that side is invalidated).
+- **Output (`3`):** one-hot `[HOLD, LONG, SHORT]` via conservative **Triple Barrier Labeling** over future bars `t+1 .. t+H` supporting both fixed-percentage (`mode: "pct"` with `take_profit_pct` / `stop_loss_pct`) and volatility-adaptive ATR-multiple barriers (`mode: "atr_multiple"` with `take_profit_atr` / `stop_loss_atr`, keeping class balance stationary across volatility regimes; if a bar touches both SL and TP simultaneously, that side is invalidated).
 - **`libnn` config:** `loss: "cce"`, output activation `"softmax"` (activates `libnn` v0.6.0's numerically stable fused `Softmax + CCE` backward path).
 
 ### Exact `NeuralNetwork` v0.6.0 Contract
@@ -73,13 +73,17 @@ For `configs/assets/btc_1h.json` (`W = 31`, 5 base features + 6 indicator output
 # 1) Generate an offline synthetic test dataset + nn_config.json (2000 bars, zero API needed)
 ./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --synthetic-candles 2000
 
-# 2) Export from real SQLite candles stored by backfill_app into data/exports
-#    (add --update-asset-schema to also update the asset's configured schema_path)
-./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --output-dir data/exports --update-asset-schema
+# 2) Export from real SQLite candles stored by backfill_app using export.* defaults in configs/bot.json
+#    (add --update-asset-schema to update the asset's configured schema_path;
+#     override paths optionally with --output-dir, --dataset-path-prefix, --model-save-dir)
+./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --update-asset-schema
 
-# 3) Train and serve directly inside your C++17 NeuralNetwork repository
-#    (use --compact for multiclass signal models)
-./build/release/apps/train_app /abs/path/to/data/exports/btc_1h_candles_nn_config.json
-./build/release/apps/train_app /abs/path/to/data/exports/btc_1h_signal_nn_config.json --compact
-./build/release/apps/server_app /abs/path/to/data/exports/btc_1h_candles_nn_config.json
+# 3) Train and serve inside your C++17 NeuralNetwork repository:
+#    - With configs/bot.json default export.dataset_path_prefix="data", copy CSVs to NeuralNetwork/data/
+#      and *_nn_config.json to NeuralNetwork/configs/ (or export with --dataset-path-prefix "" to embed absolute CSV paths)
+#    - Use --compact for multiclass signal models
+./build/release/apps/train_app configs/btc_1h_candles_nn_config.json
+./build/release/apps/train_app configs/btc_1h_signal_nn_config.json --compact
+./build/release/apps/server_app configs/btc_1h_candles_nn_config.json
+./build/release/apps/server_app configs/btc_1h_signal_nn_config.json
 ```

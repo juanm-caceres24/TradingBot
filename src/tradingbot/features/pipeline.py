@@ -39,6 +39,7 @@ class WindowContext:
     anchor_close: float
     scale: float
     vector: list[float]
+    atr: float | None = None
 
 
 def _normalize_indicator_value(
@@ -66,9 +67,13 @@ class FeaturePipeline:
         self._features_cfg = asset.features
         self._engine = IndicatorEngine(asset.indicators)
         self._nn_indicators = self._engine.nn_indicators()
+        needs_atr = (
+            self._features_cfg.normalization == "atr_relative"
+            or self._features_cfg.triple_barrier.mode == "atr_multiple"
+        )
         self._atr_indicator = (
             ATRIndicator("_norm_atr", {"period": self._features_cfg.atr_period})
-            if self._features_cfg.normalization == "atr_relative"
+            if needs_atr
             else None
         )
 
@@ -136,14 +141,20 @@ class FeaturePipeline:
             for cfg in self._asset.indicators
             if cfg.use_in_nn
         )
-        tb_dict = (
-            {
-                "take_profit_pct": self._features_cfg.triple_barrier.take_profit_pct,
-                "stop_loss_pct": self._features_cfg.triple_barrier.stop_loss_pct,
-            }
-            if model_kind == "signal"
-            else None
-        )
+        tb = self._features_cfg.triple_barrier
+        tb_dict: dict[str, object] | None = None
+        if model_kind == "signal":
+            if tb.mode == "atr_multiple":
+                tb_dict = {
+                    "mode": "atr_multiple",
+                    "take_profit_atr": tb.take_profit_atr,
+                    "stop_loss_atr": tb.stop_loss_atr,
+                }
+            else:
+                tb_dict = {
+                    "take_profit_pct": tb.take_profit_pct,
+                    "stop_loss_pct": tb.stop_loss_pct,
+                }
         feature_hash = compute_feature_hash(
             model_kind=model_kind,
             input_window=self._features_cfg.input_window,
@@ -211,12 +222,16 @@ class FeaturePipeline:
 
         anchor = candles[anchor_index]
         anchor_close = anchor.close
-        if self._features_cfg.normalization == "atr_relative":
-            assert atr_series is not None
+        anchor_atr: float | None = None
+        if atr_series is not None:
             raw_atr = atr_series[anchor_index]
             if raw_atr is None or not math.isfinite(raw_atr):
                 return None
-            scale = max(raw_atr, anchor_close * 1e-6)
+            anchor_atr = max(raw_atr, anchor_close * 1e-6)
+
+        if self._features_cfg.normalization == "atr_relative":
+            assert anchor_atr is not None
+            scale = anchor_atr
         else:
             scale = anchor_close
 
@@ -260,6 +275,7 @@ class FeaturePipeline:
             anchor_close=anchor_close,
             scale=scale,
             vector=vec,
+            atr=anchor_atr,
         )
 
     def build_latest_inference_window(self, candles: Sequence[Candle]) -> WindowContext:
@@ -300,21 +316,27 @@ class FeaturePipeline:
         candles: Sequence[Candle],
         anchor_index: int,
         anchor_close: float,
+        *,
+        atr: float | None = None,
     ) -> list[float]:
         """Triple Barrier Labeling over the next H future candles -> [HOLD, LONG, SHORT].
+
+        Supports both fixed-percentage (`mode="pct"`) and volatility-adaptive
+        ATR-multiple (`mode="atr_multiple"`) barriers.
 
         Conservative resolution: if both a side's take-profit and stop-loss are
         touched within the exact same candle, that side is invalidated rather than
         assumed profitable.
         """
         h = self._features_cfg.forecast_horizon
-        tp_pct = self._features_cfg.triple_barrier.take_profit_pct
-        sl_pct = self._features_cfg.triple_barrier.stop_loss_pct
+        tp_dist, sl_dist = self._features_cfg.triple_barrier.barrier_distances(
+            anchor_close, atr=atr
+        )
 
-        tp_long = anchor_close * (1.0 + tp_pct)
-        sl_long = anchor_close * (1.0 - sl_pct)
-        tp_short = anchor_close * (1.0 - tp_pct)
-        sl_short = anchor_close * (1.0 + sl_pct)
+        tp_long = anchor_close + tp_dist
+        sl_long = max(1e-8, anchor_close - sl_dist)
+        tp_short = max(1e-8, anchor_close - tp_dist)
+        sl_short = anchor_close + sl_dist
 
         long_alive = True
         short_alive = True
@@ -397,7 +419,9 @@ class FeaturePipeline:
                     candles, anchor_idx, ctx.anchor_close, ctx.scale
                 )
             else:
-                target = self.encode_signal_target(candles, anchor_idx, ctx.anchor_close)
+                target = self.encode_signal_target(
+                    candles, anchor_idx, ctx.anchor_close, atr=ctx.atr
+                )
 
             if not all(math.isfinite(v) for v in target):
                 continue

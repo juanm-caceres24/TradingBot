@@ -24,6 +24,7 @@ class TradeAnalyzer:
         direction: str,
         anchor_close: float,
         candles: Sequence[PredictedCandle],
+        anchor_atr: float | None = None,
     ) -> tuple[float | None, float | None, float | None]:
         """Compute (estimated_tp, estimated_sl, risk_reward) from predicted OHLC path."""
         if not candles or direction not in ("LONG", "SHORT"):
@@ -32,33 +33,50 @@ class TradeAnalyzer:
         max_high = max(c.high for c in candles)
         min_low = min(c.low for c in candles)
 
+        def _fallback_dists() -> tuple[float, float]:
+            return self._tb.barrier_distances(anchor_close, atr=anchor_atr)
+
         if direction == "LONG":
-            tp = max_high if max_high > anchor_close else anchor_close * (1.0 + self._tb.take_profit_pct)
-            sl = min_low if min_low < anchor_close else anchor_close * (1.0 - self._tb.stop_loss_pct)
+            raw_tp = max_high if max_high > anchor_close else anchor_close + _fallback_dists()[0]
+            raw_sl = min_low if min_low < anchor_close else anchor_close - _fallback_dists()[1]
+            tp = max(1e-8, round(raw_tp, 8))
+            sl = max(1e-8, round(raw_sl, 8))
             reward = max(0.0, tp - anchor_close)
             risk = max(1e-9, anchor_close - sl)
-            return round(tp, 8), round(sl, 8), round(reward / risk, 4)
+            return tp, sl, round(reward / risk, 4)
 
-        tp = min_low if min_low < anchor_close else anchor_close * (1.0 - self._tb.take_profit_pct)
-        sl = max_high if max_high > anchor_close else anchor_close * (1.0 + self._tb.stop_loss_pct)
+        raw_tp = min_low if min_low < anchor_close else anchor_close - _fallback_dists()[0]
+        raw_sl = max_high if max_high > anchor_close else anchor_close + _fallback_dists()[1]
+        tp = max(1e-8, round(raw_tp, 8))
+        sl = max(1e-8, round(raw_sl, 8))
         reward = max(0.0, anchor_close - tp)
         risk = max(1e-9, sl - anchor_close)
-        return round(tp, 8), round(sl, 8), round(reward / risk, 4)
+        return tp, sl, round(reward / risk, 4)
 
     def _compute_triple_barrier_levels(
-        self, direction: str, anchor_close: float
-    ) -> tuple[float | None, float | None, float | None]:
+        self,
+        direction: str,
+        anchor_close: float,
+        anchor_atr: float | None = None,
+    ) -> tuple[float | None, float | None, float | None, float]:
+        if direction not in ("LONG", "SHORT"):
+            return None, None, None, 0.0
+        tp_dist, sl_dist = self._tb.barrier_distances(anchor_close, atr=anchor_atr)
         if direction == "LONG":
-            tp = anchor_close * (1.0 + self._tb.take_profit_pct)
-            sl = anchor_close * (1.0 - self._tb.stop_loss_pct)
-            rr = self._tb.take_profit_pct / self._tb.stop_loss_pct
-            return round(tp, 8), round(sl, 8), round(rr, 4)
-        if direction == "SHORT":
-            tp = anchor_close * (1.0 - self._tb.take_profit_pct)
-            sl = anchor_close * (1.0 + self._tb.stop_loss_pct)
-            rr = self._tb.take_profit_pct / self._tb.stop_loss_pct
-            return round(tp, 8), round(sl, 8), round(rr, 4)
-        return None, None, None
+            tp = max(1e-8, round(anchor_close + tp_dist, 8))
+            sl = max(1e-8, round(anchor_close - sl_dist, 8))
+            reward = max(0.0, tp - anchor_close)
+            risk = max(1e-9, anchor_close - sl)
+            rr = reward / risk
+            move_pct = reward / max(1e-9, anchor_close)
+            return tp, sl, round(rr, 4), move_pct
+        tp = max(1e-8, round(anchor_close - tp_dist, 8))
+        sl = max(1e-8, round(anchor_close + sl_dist, 8))
+        reward = max(0.0, anchor_close - tp)
+        risk = max(1e-9, sl - anchor_close)
+        rr = reward / risk
+        move_pct = reward / max(1e-9, anchor_close)
+        return tp, sl, round(rr, 4), -move_pct
 
     @staticmethod
     def _directional_consistency(
@@ -80,6 +98,7 @@ class TradeAnalyzer:
         *,
         predicted_candles: Sequence[PredictedCandle] = (),
         signal: SignalPrediction | None = None,
+        anchor_atr: float | None = None,
     ) -> TradeAnalysis:
         """Synthesize a TradeAnalysis from whichever model outputs are available."""
         has_candles = len(predicted_candles) > 0
@@ -114,8 +133,9 @@ class TradeAnalyzer:
                         f"min={self._cfg.min_signal_confidence:.1%})"
                     ),
                 )
-            tp, sl, rr = self._compute_triple_barrier_levels(best_act, anchor_close)
-            signed_move = self._tb.take_profit_pct if best_act == "LONG" else -self._tb.take_profit_pct
+            tp, sl, rr, signed_move = self._compute_triple_barrier_levels(
+                best_act, anchor_close, anchor_atr=anchor_atr
+            )
             if rr is not None and rr < self._cfg.min_risk_reward:
                 return TradeAnalysis(
                     action="HOLD",
@@ -161,7 +181,9 @@ class TradeAnalyzer:
                         f"below threshold {self._cfg.min_expected_move_pct:.2%}"
                     ),
                 )
-            tp, sl, rr = self._compute_candle_levels(candle_dir, anchor_close, predicted_candles)
+            tp, sl, rr = self._compute_candle_levels(
+                candle_dir, anchor_close, predicted_candles, anchor_atr=anchor_atr
+            )
             consistency = self._directional_consistency(candle_dir, anchor_close, predicted_candles)
             rr_factor = min(1.0, (rr or 0.0) / max(self._cfg.min_risk_reward, 1e-6))
             heuristic_conf = round(max(0.0, min(1.0, 0.6 * consistency + 0.4 * rr_factor)), 4)
@@ -242,7 +264,9 @@ class TradeAnalyzer:
                 ),
             )
 
-        tp, sl, rr = self._compute_candle_levels(sig_act, anchor_close, predicted_candles)
+        tp, sl, rr = self._compute_candle_levels(
+            sig_act, anchor_close, predicted_candles, anchor_atr=anchor_atr
+        )
         if rr is not None and rr < self._cfg.min_risk_reward:
             return TradeAnalysis(
                 action="HOLD",

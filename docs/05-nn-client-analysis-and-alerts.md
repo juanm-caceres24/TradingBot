@@ -31,9 +31,9 @@ Transforms $H \times 4$ relative OHLC outputs back into absolute prices using th
 ## 3. Trade Analysis (`TradeAnalyzer`)
 
 Supports all four per-asset model combinations cleanly (`extra_models` outputs are forwarded verbatim in `PredictionSnapshot.extra_outputs`):
-1. **Dual-Model Cross-Confirmation (`candle_predictor` + `signal_classifier`):** Requires `signal.best_probability >= min_signal_confidence`, rejects active directional contradictions and moves with `|expected_move_pct| < min_expected_move_pct`, estimates TP/SL from the projected OHLC path (with Triple-Barrier stop floor if predicted drawdown is zero), and enforces `risk_reward >= min_risk_reward`.
-2. **Candle Predictor Only:** Evaluates `expected_move_pct` against `min_expected_move_pct`, computes directional consistency across all $H$ bars and R:R, and produces an explicit heuristic confidence score.
-3. **Signal Classifier Only:** Evaluates calibrated Softmax probability against `min_signal_confidence` and derives TP/SL and R:R from the asset's `triple_barrier` parameters (`0 < pct < 1`).
+1. **Dual-Model Cross-Confirmation (`candle_predictor` + `signal_classifier`):** Requires `signal.best_probability >= min_signal_confidence`, rejects active directional contradictions and moves with `|expected_move_pct| < min_expected_move_pct`, estimates TP/SL from the projected OHLC path (falling back to the configured `triple_barrier` TP/SL levels whenever the projected path does not extend past `anchor_close` on that side), and enforces `risk_reward >= min_risk_reward`.
+2. **Candle Predictor Only:** Evaluates `expected_move_pct` against `min_expected_move_pct`, computes directional consistency across all $H$ bars and R:R (using the same `triple_barrier` TP/SL fallback), and produces an explicit heuristic confidence score.
+3. **Signal Classifier Only:** Evaluates calibrated Softmax probability against `min_signal_confidence` and derives TP/SL and R:R from the asset's `triple_barrier` parameters (`pct` or volatility-adaptive `atr_multiple`).
 4. **No Primary Models Enabled:** Emits neutral `HOLD` (for charting-only assets).
 
 ---
