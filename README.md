@@ -10,34 +10,33 @@ A modular, transparent, zero-hardcode **Python** multi-asset market data collect
 - **Modular Core + Thin Apps:** All reusable logic lives in `src/tradingbot/`; thin CLI entrypoints live in `apps/`.
 - **Living Documentation & Incremental Releases:** Specifications, architecture notes, and workflow conventions live in [`docs/`](docs/) and evolve alongside unit-tested feature branches.
 
-## Current Status (`v0.2.0`)
+## Current Status (`v0.3.0`)
 
-- Strict multi-asset JSON configuration loader (`tradingbot.config`) supporting modular `configs/bot.json`, per-asset files (`configs/assets/*.json`), provider presets (`configs/providers/*.json`), extensible `extra_models`, alert rules, and outbound webhooks.
-- Canonical domain models (`tradingbot.models`): `Timeframe`, `Candle`, `TimeRange`, prediction/analysis bundles, and `AlertEvent`.
-- Local SQLite persistence (`tradingbot.storage.SQLiteCandleStore`) with WAL mode, composite primary keys (`WITHOUT ROWID`), `sync_ranges`, `predictions` audit logs, and cursor-queryable `alerts`.
-- Gap detection & sync planning (`tradingbot.storage.GapDetector`) supporting tail gaps, internal gaps, head backfill ranges, unclosed-candle crash recovery, verified empty ranges, and pagination chunking.
-- Market data providers & backfill engine (`tradingbot.providers`): JSON-driven `GenericRestProvider` (Binance Spot preset + generic REST/broker support), deterministic `SyntheticProvider`, multi-asset `SyncService`, and CLI app `apps/backfill_app.py`.
+- Strict multi-asset JSON configuration (`tradingbot.config`), canonical domain models (`tradingbot.models`), local SQLite persistence (`SQLiteCandleStore`), and gap detection (`GapDetector`).
+- JSON-driven REST provider (`GenericRestProvider` + Binance Spot preset), deterministic `SyntheticProvider`, multi-asset `SyncService`, and `apps/backfill_app.py`.
+- Extensible indicator registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, `SqueezeMomentum`) with strict warm-up exclusion (`tradingbot.indicators`).
+- Window-relative feature normalization (`atr_relative` / `pct_relative`), `feature_schema.json` integrity fingerprinting, Triple Barrier labeling, `libnn` v0.6.0 CSV exporter, automatic `nn_config.json` generator, and `apps/export_dataset_app.py` (supporting both SQLite history and offline synthetic test datasets).
 
 ## Quick Start
 
 ### Requirements
-- Python 3.11+ (standard library only through `v0.2.0`)
+- Python 3.11+ (standard library only through `v0.3.0`)
 
 ### Run Unit Tests
 ```bash
 ./scripts/test.sh
 ```
 
-### Backfill Historical Data
+### Backfill & Export Datasets for `NeuralNetwork` v0.6.0
 ```bash
-# Preview missing ranges for BTC 1h without calling the API
-./scripts/backfill.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-01-10 --dry-run
+# Download real BTC 1h candles from Binance Spot into data/market.db
+./scripts/backfill.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-02-01
 
-# Download BTC 1h candles from Binance Spot into data/market.db
-./scripts/backfill.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-01-10
+# Export Candle Predictor & Signal Classifier CSVs + nn_config.json from SQLite
+./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both
 
-# Auto-sync all enabled assets up to now
-./scripts/backfill.sh configs/bot.json --sync-now
+# Or generate an offline synthetic test dataset (2000 candles) immediately
+./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --synthetic-candles 2000
 ```
 
 ## Documentation
@@ -48,3 +47,4 @@ All project specifications, architecture decisions, and workflows live in [`docs
 - [`docs/01-git-workflow.md`](docs/01-git-workflow.md) — Simplified Solo Git Flow, Conventional Commits, and release conventions.
 - [`docs/02-storage-and-gap-detection.md`](docs/02-storage-and-gap-detection.md) — SQLite schema (`candles`, `sync_ranges`, `predictions`, `alerts`), `WITHOUT ROWID` indexing, half-open time ranges, and gap detection algorithm.
 - [`docs/03-providers-and-backfill.md`](docs/03-providers-and-backfill.md) — Declarative JSON REST provider, deterministic synthetic generator, `SyncService`, and `backfill_app.py` usage.
+- [`docs/04-indicators-features-and-datasets.md`](docs/04-indicators-features-and-datasets.md) — Indicator registry, warm-up rules, window-relative normalization, Triple Barrier labeling, and `NeuralNetwork` v0.6.0 dataset/config export.
