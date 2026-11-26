@@ -7,12 +7,11 @@ This document describes the live multi-asset orchestrator (`BotOrchestrator`), t
 ## 1. Live Orchestrator Architecture (`BotOrchestrator` & `AssetRunner`)
 
 ```text
-BotOrchestrator (per-asset poll scheduler, graceful SIGINT/SIGTERM stop)
+BotOrchestrator (per-asset poll scheduler, thread-safe AssetRunner locks, SIGINT/SIGTERM stop)
        │
        ├── AssetRunner("btc_1h", poll=5s)  ──► SyncService / GapDetector ──► SQLiteCandleStore
-       │                                   ──► IndicatorEngine + PredictionEngine ──► server_app(s)
-       │                                   ──► AlertEvaluator ──► SQLite alerts + WebhookDispatcher
-       └── AssetRunner("btc_1w", poll=30s) ──► ...
+       ├── AssetRunner("btc_4h", poll=15s) ──► IndicatorEngine + PredictionEngine ──► server_app(s)
+       └── AssetRunner("btc_1d", poll=30s) ──► AlertEvaluator ──► SQLite alerts + WebhookDispatcher
        │
        ├──► RuntimeState (thread-safe RAM snapshots for REST /api/assets/*)
        └──► EventBus     (thread-safe pub/sub events for WebSocket /ws/live & /ws/alerts)
@@ -35,11 +34,17 @@ Whenever a closed candle satisfies an asset's alert rules (`consecutive_candles`
   "alert": {
     "id": 1,
     "asset_id": "btc_1h",
+    "provider": "binance_spot",
     "symbol": "BTCUSDT",
     "timeframe": "1h",
+    "anchor_open_time_ms": 1735689600000,
+    "created_at_ms": 1735693200100,
     "action": "LONG",
     "confidence": 0.82,
     "consecutive_hits": 2,
+    "rule_name": "consecutive_2_bars",
+    "payload_json": "{\"risk_reward\":2.4,\"estimated_tp\":102000.0,\"estimated_sl\":98500.0}",
+    "acknowledged": false,
     "payload": { "risk_reward": 2.4, "estimated_tp": 102000.0, "estimated_sl": 98500.0 }
   }
 }
@@ -58,12 +63,13 @@ Steps chronologically through stored SQLite candles in O(N) time (exploiting str
 ## 4. CLI Usage
 
 ```bash
-# Continuous multi-asset live collector (headless)
+# Continuous multi-asset live collector (headless, optional --all-assets, --strict-nn, --max-cycles, --quiet)
 ./scripts/live.sh configs/bot.json --headless
 
 # Live-only mode for a single asset
 ./scripts/live.sh configs/bot.json --asset btc_1h --mode live_only --headless
 
-# Historical replay over stored SQLite candles with per-bar verbose output
+# Historical replay over stored SQLite candles
+# (supports --start, --end, --step-delay, --persist-predictions, --persist-alerts, --dispatch-webhooks, --verbose)
 ./scripts/replay.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-02-01 --verbose
 ```

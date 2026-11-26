@@ -45,6 +45,11 @@ class AlertEvaluator:
         self._candles_since_alert = self._rules.cooldown_candles
         self._total_emitted = 0
 
+    def seed_last_anchor(self, anchor_open_time_ms: int) -> None:
+        """Seed last evaluated bar timestamp (e.g. from SQLite after restart) to prevent duplicates."""
+        if self._last_anchor_ms is None or anchor_open_time_ms > self._last_anchor_ms:
+            self._last_anchor_ms = anchor_open_time_ms
+
     def status_dict(self) -> dict[str, Any]:
         return {
             "asset_id": self._asset.id,
@@ -67,11 +72,9 @@ class AlertEvaluator:
             return False
         if abs(analysis.expected_move_pct) < self._rules.min_expected_move_pct:
             return False
-        if (
-            analysis.risk_reward is not None
-            and analysis.risk_reward < self._rules.min_risk_reward
-        ):
-            return False
+        if self._rules.min_risk_reward > 0.0:
+            if analysis.risk_reward is None or analysis.risk_reward < self._rules.min_risk_reward:
+                return False
         return True
 
     def evaluate(
@@ -91,8 +94,17 @@ class AlertEvaluator:
         ):
             return None
 
+        prev_anchor_ms = self._last_anchor_ms
         self._last_anchor_ms = snapshot.anchor_open_time_ms
         self._candles_since_alert += 1
+
+        # For 24/7 markets, a multi-bar gap breaks a consecutive streak cleanly.
+        interval_ms = self._asset.market.parsed_timeframe.interval_ms
+        is_contiguous = (
+            prev_anchor_ms is None
+            or self._asset.market.market_schedule != "24/7"
+            or (snapshot.anchor_open_time_ms - prev_anchor_ms) == interval_ms
+        )
 
         if not self._qualifies(snapshot):
             self._streak_action = None
@@ -101,7 +113,7 @@ class AlertEvaluator:
 
         assert snapshot.analysis is not None
         action = snapshot.analysis.action
-        if action == self._streak_action:
+        if action == self._streak_action and is_contiguous:
             self._streak_count += 1
         else:
             self._streak_action = action

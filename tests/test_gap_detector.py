@@ -198,6 +198,21 @@ class TestGapDetector(unittest.TestCase):
             [TimeRange(40 * HOUR_MS, 50 * HOUR_MS), TimeRange(56 * HOUR_MS, 58 * HOUR_MS)],
         )
 
+    def test_weekly_binance_monday_candles_are_recognized_without_false_gaps(self) -> None:
+        week_ms = 7 * DAY_MS
+        mon0 = parse_iso_to_ms("2024-01-01T00:00:00Z")  # Monday
+        mon1 = mon0 + week_ms
+        mon2 = mon0 + 2 * week_ms
+        mon3 = mon0 + 3 * week_ms
+        # Store week 0 and week 2 (week 1 missing)
+        self.store.upsert_candles([_candle_at(mon0, "1w"), _candle_at(mon2, "1w")])
+        # Query on Wednesday of week 3 -> latest closed weekly bar ends at mon3
+        now_wed = mon3 + 2 * DAY_MS
+        missing = GapDetector.plan_sync_ranges(
+            self.store, "binance_spot", "BTCUSDT", "1w", now_wed
+        )
+        self.assertEqual(missing, [TimeRange(mon1, mon2)])
+
 
 if __name__ == "__main__":
     unittest.main()

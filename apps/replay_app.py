@@ -83,7 +83,7 @@ def _select_assets(all_assets: tuple[AssetConfig, ...], requested: list[str]) ->
     if requested:
         by_id = {a.id: a for a in all_assets}
         selected: list[AssetConfig] = []
-        for aid in requested:
+        for aid in dict.fromkeys(requested):
             if aid not in by_id:
                 raise ConfigError(
                     f"Unknown asset_id '{aid}'. Available: {', '.join(sorted(by_id.keys()))}"
@@ -127,6 +127,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         start_ms = parse_iso_to_ms(args.start) if args.start else None
         end_ms = parse_iso_to_ms(args.end) if args.end else None
+        if start_ms is not None and end_ms is not None and end_ms <= start_ms:
+            print("Error: --end must be strictly greater than --start.", file=sys.stderr)
+            return 2
         webhooks = (
             WebhookDispatcher(cfg.notifications.webhooks)
             if args.dispatch_webhooks

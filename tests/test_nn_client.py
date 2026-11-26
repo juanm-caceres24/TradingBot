@@ -179,6 +179,79 @@ class TestNeuralNetworkClient(unittest.TestCase):
                 srv.server_close()
                 th.join(timeout=2.0)
 
+    def test_timeout_validation_and_signal_candle_output_guards(self) -> None:
+        with self.assertRaises(ValueError):
+            NeuralNetworkClient("127.0.0.1", 8080, timeout_sec=True)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            NeuralNetworkClient("127.0.0.1", 8080, timeout_sec=float("nan"))
+
+        # Test invalid output shapes and probability bounds from mock servers
+        srv_bad_c, th_bad_c, port_bad_c = _make_mock_nn_server(341, [0.1] * 4)  # wrong length (expects 28)
+        srv_neg_s, th_neg_s, port_neg_s = _make_mock_nn_server(341, [-0.1, 0.9, 0.2])  # negative prob
+        srv_sum_s, th_sum_s, port_sum_s = _make_mock_nn_server(341, [0.5, 0.5, 0.5])  # sum=1.5
+        srv_len_s, th_len_s, port_len_s = _make_mock_nn_server(341, [0.5, 0.5])  # wrong length (expects 3)
+        srv_extra, th_extra, port_extra = _make_mock_nn_server(341, [0.42, 0.58])  # extra model
+
+        servers = (
+            (srv_bad_c, th_bad_c),
+            (srv_neg_s, th_neg_s),
+            (srv_sum_s, th_sum_s),
+            (srv_len_s, th_len_s),
+            (srv_extra, th_extra),
+        )
+        try:
+            vec = [0.0] * 341
+            raw_base = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+            raw_base["neural_networks"]["candle_predictor"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port_bad_c,
+                "schema_path": "",
+            }
+            raw_base["neural_networks"]["signal_classifier"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port_neg_s,
+                "schema_path": "",
+            }
+            raw_base["neural_networks"]["extra_models"] = {
+                "volatility_head": {
+                    "enabled": True,
+                    "host": "127.0.0.1",
+                    "port": port_extra,
+                    "schema_path": "",
+                }
+            }
+            client1 = AssetNNClient(parse_asset_dict(raw_base, base_dir=BTC_1H_ASSET_PATH.parent))
+            with self.assertRaises(NNClientError):
+                client1.predict_candles(vec)
+            with self.assertRaises(NNClientError):
+                client1.predict_signal(vec)
+            extra_res = client1.predict_extra(vec)
+            self.assertIn("volatility_head", extra_res)
+            self.assertEqual(extra_res["volatility_head"].output, (0.42, 0.58))
+
+            for bad_port in (port_sum_s, port_len_s):
+                raw_s = copy.deepcopy(raw_base)
+                raw_s["neural_networks"]["candle_predictor"]["enabled"] = False
+                raw_s["neural_networks"]["signal_classifier"]["port"] = bad_port
+                raw_s["neural_networks"]["extra_models"] = {}
+                c_s = AssetNNClient(parse_asset_dict(raw_s, base_dir=BTC_1H_ASSET_PATH.parent))
+                with self.assertRaises(NNClientError):
+                    c_s.predict_signal(vec)
+
+            # Extra model verify_all succeeds when input_size matches
+            raw_ex = copy.deepcopy(raw_base)
+            raw_ex["neural_networks"]["candle_predictor"]["enabled"] = False
+            raw_ex["neural_networks"]["signal_classifier"]["enabled"] = False
+            infos = AssetNNClient(parse_asset_dict(raw_ex, base_dir=BTC_1H_ASSET_PATH.parent)).verify_all()
+            self.assertEqual(infos["volatility_head"].output_size, 2)
+        finally:
+            for srv, th in servers:
+                srv.shutdown()
+                srv.server_close()
+                th.join(timeout=2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

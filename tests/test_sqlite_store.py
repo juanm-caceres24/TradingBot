@@ -220,8 +220,17 @@ class TestSQLiteCandleStore(unittest.TestCase):
         self.assertEqual([a.alert_id for a in btc_only], [3, 1])
 
         # Acknowledge alert 1 -> idempotent False on second ack
+        self.assertTrue(self.store.alert_exists(id1))
+        self.assertFalse(self.store.alert_exists(999))
+        self.assertEqual(self.store.count_alerts(), 3)
+        self.assertEqual(self.store.count_alerts(asset_id="btc_1h"), 2)
+        self.assertEqual(self.store.count_alerts(asset_id="btc_1h", unacknowledged_only=True), 2)
+
         self.assertTrue(self.store.acknowledge_alert(id1))
         self.assertFalse(self.store.acknowledge_alert(id1))
+        self.assertEqual(self.store.count_alerts(asset_id="btc_1h", unacknowledged_only=True), 1)
+        self.assertEqual(self.store.count_alerts(unacknowledged_only=True), 2)
+
         unack = self.store.get_alerts(unacknowledged_only=True, since_id=0)
         self.assertEqual([a.alert_id for a in unack], [2, 3])
         self.assertTrue(all(not a.acknowledged for a in unack))

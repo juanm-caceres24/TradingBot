@@ -54,8 +54,13 @@ class NeuralNetworkClient:
             raise ValueError("host must be a non-empty string")
         if isinstance(port, bool) or not isinstance(port, int) or not (1 <= port <= 65535):
             raise ValueError(f"port must be in 1..65535, got {port!r}")
-        if timeout_sec <= 0.0:
-            raise ValueError(f"timeout_sec must be > 0, got {timeout_sec}")
+        if (
+            isinstance(timeout_sec, bool)
+            or not isinstance(timeout_sec, (int, float))
+            or not math.isfinite(float(timeout_sec))
+            or float(timeout_sec) <= 0.0
+        ):
+            raise ValueError(f"timeout_sec must be a finite number > 0, got {timeout_sec!r}")
 
         self._host = host
         self._port = port
@@ -131,13 +136,16 @@ class NeuralNetworkClient:
         if not isinstance(layers_raw, list):
             raise NNClientError("GET /info 'layers' must be a list")
 
-        return ModelInfo(
-            input_size=int(data["input_size"]),
-            output_size=int(data["output_size"]),
-            num_layers=int(data["num_layers"]),
-            parameters=int(data["parameters"]),
-            layers=tuple(dict(layer) for layer in layers_raw),
-        )
+        try:
+            return ModelInfo(
+                input_size=int(data["input_size"]),
+                output_size=int(data["output_size"]),
+                num_layers=int(data["num_layers"]),
+                parameters=int(data["parameters"]),
+                layers=tuple(dict(layer) for layer in layers_raw),
+            )
+        except (TypeError, ValueError) as exc:
+            raise NNClientError(f"GET /info returned malformed numeric/layer fields: {exc}") from exc
 
     def predict(
         self,
@@ -168,6 +176,8 @@ class NeuralNetworkClient:
         except (TypeError, ValueError) as exc:
             raise NNClientError(f"POST /predict returned malformed numeric values: {exc}") from exc
 
+        if latency_us < 0:
+            raise NNClientError(f"POST /predict returned negative latency_us: {latency_us}")
         if not all(math.isfinite(v) for v in output):
             raise NNClientError("POST /predict returned non-finite output values")
 

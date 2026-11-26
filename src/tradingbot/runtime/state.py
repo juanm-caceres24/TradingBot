@@ -1,7 +1,7 @@
 """Thread-safe shared runtime state and lightweight pub/sub EventBus.
 
 Decouples the multi-asset collector/analysis loop from downstream UI and API
-consumers (console logging in v0.5.0; FastAPI REST + WebSocket push in v0.6.0).
+consumers (console logging and embedded stdlib HTTP/REST + RFC 6455 WebSocket push).
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ class AssetRuntimeSnapshot:
     candles: tuple[Candle, ...] = ()
     indicators: dict[str, dict[str, list[float | None]]] = field(default_factory=dict)
     indicator_plots: dict[str, str] = field(default_factory=dict)
+    indicator_types: dict[str, str] = field(default_factory=dict)
     latest_prediction: PredictionSnapshot | None = None
     nn_health: dict[str, bool] = field(default_factory=dict)
     alert_status: dict[str, Any] = field(default_factory=dict)
@@ -127,6 +128,7 @@ class AssetRuntimeSnapshot:
             "candles": [c.to_dict() for c in candles_slice],
             "indicators": sliced_indicators,
             "indicator_plots": dict(self.indicator_plots),
+            "indicator_types": dict(self.indicator_types),
             "prediction": (
                 snapshot_to_dict(self.latest_prediction)
                 if self.latest_prediction is not None

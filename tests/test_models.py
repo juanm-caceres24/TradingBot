@@ -47,6 +47,22 @@ class TestTimeframeAndTimeUtils(unittest.TestCase):
         self.assertEqual(tf.align_ceil(5 * hour + 1), 6 * hour)
         self.assertEqual(tf.next_open(5 * hour), 6 * hour)
 
+    def test_weekly_timeframe_anchors_to_monday_utc(self) -> None:
+        tf_w = Timeframe.parse("1w")
+        # 2024-01-01T00:00:00Z was a Monday (matches Binance 1w klines)
+        mon_2024 = parse_iso_to_ms("2024-01-01T00:00:00Z")
+        thu_2024 = parse_iso_to_ms("2024-01-04T00:00:00Z")
+        next_mon = parse_iso_to_ms("2024-01-08T00:00:00Z")
+        self.assertTrue(tf_w.is_aligned(mon_2024))
+        self.assertFalse(tf_w.is_aligned(thu_2024))
+        self.assertEqual(tf_w.align_floor(thu_2024), mon_2024)
+        self.assertEqual(tf_w.align_ceil(thu_2024), next_mon)
+        self.assertEqual(tf_w.align_ceil(mon_2024), mon_2024)
+
+    def test_candle_normalizes_timeframe_label(self) -> None:
+        c = Candle("p", "BTCUSDT", " 1H ", 0, 10, 100.0, 105.0, 95.0, 102.0, 1.0)
+        self.assertEqual(c.timeframe, "1h")
+
     def test_iso_roundtrip(self) -> None:
         ts_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
         self.assertEqual(ts_ms, 1_735_689_600_000)

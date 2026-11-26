@@ -100,7 +100,7 @@ def _select_assets(
     if requested_ids:
         by_id = {a.id: a for a in all_assets}
         selected: list[AssetConfig] = []
-        for aid in requested_ids:
+        for aid in dict.fromkeys(requested_ids):
             if aid not in by_id:
                 raise ConfigError(
                     f"Unknown asset_id '{aid}'. Available: {', '.join(sorted(by_id.keys()))}"
@@ -214,7 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     signal.signal(signal.SIGTERM, prev_sigterm)
 
         return 0
-    except (ConfigError, SchemaMismatchError, NNClientError, ValueError) as exc:
+    except (ConfigError, SchemaMismatchError, NNClientError, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

@@ -13,8 +13,12 @@
     alerts: [],
     alertsUnreadOnly: true,
     ws: null,
+    wsHasConnectedOnce: false,
     reconnectDelayMs: 1000,
     refreshTimer: null,
+    wsDebounceTimer: null,
+    wsPendingFlags: { assets: false, detail: false, alerts: false },
+    zoomFetchTimer: null,
   };
 
   const els = {
@@ -54,6 +58,15 @@
     btnAlertsUnack: document.getElementById("btn-alerts-unack"),
     btnAlertsAll: document.getElementById("btn-alerts-all"),
   };
+
+  function escapeHtml(val) {
+    return String(val === null || val === undefined ? "" : val)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
 
   function fmtNum(v, decimals) {
     if (v === null || v === undefined || !Number.isFinite(v)) return "--";
@@ -100,13 +113,34 @@
         `L:${fmtNum(c.low)} C:${fmtNum(c.close)} V:${fmtNum(c.volume, 2)}`;
       if (info.indicators) {
         for (const [id, cols] of Object.entries(info.indicators)) {
-          const val = cols.value !== undefined ? cols.value : cols.momentum;
-          if (val !== null && val !== undefined && Number.isFinite(val)) {
-            txt += ` | ${id}:${fmtNum(val, 2)}`;
+          if (cols.upper !== undefined && cols.middle !== undefined && cols.lower !== undefined) {
+            if (Number.isFinite(cols.middle)) {
+              txt += ` | ${id}:${fmtNum(cols.upper, 2)}/${fmtNum(cols.middle, 2)}/${fmtNum(cols.lower, 2)}`;
+            }
+          } else if (cols.momentum !== undefined) {
+            if (Number.isFinite(cols.momentum)) {
+              const sqz = cols.squeeze_state > 0.5 ? "ON" : (cols.squeeze_state < -0.5 ? "OFF" : "-");
+              txt += ` | ${id}:${fmtNum(cols.momentum, 2)}(${sqz})`;
+            }
+          } else {
+            for (const [colName, val] of Object.entries(cols)) {
+              if (val !== null && val !== undefined && Number.isFinite(val)) {
+                const label = colName === "value" ? id : `${id}.${colName}`;
+                txt += ` | ${label}:${fmtNum(val, 2)}`;
+              }
+            }
           }
         }
       }
       els.crosshairReadout.textContent = txt;
+    },
+    function onZoom(visibleCount) {
+      if (state.activeDetail && state.activeDetail.candles && visibleCount > state.activeDetail.candles.length) {
+        if (state.zoomFetchTimer) clearTimeout(state.zoomFetchTimer);
+        state.zoomFetchTimer = setTimeout(() => {
+          refreshActiveDetail().catch(() => {});
+        }, 180);
+      }
     }
   );
 
@@ -146,15 +180,15 @@
 
       card.innerHTML = `
         <div class="watch-row">
-          <span class="watch-symbol">${a.symbol}</span>
-          <span class="watch-tf">${a.timeframe} ${unreadHtml}</span>
+          <span class="watch-symbol">${escapeHtml(a.symbol)}</span>
+          <span class="watch-tf">${escapeHtml(a.timeframe)} ${unreadHtml}</span>
         </div>
         <div class="watch-row">
           <span class="watch-price">${fmtNum(a.last_price)}</span>
-          <span class="action-pill ${actionClass(act)}">${act}</span>
+          <span class="action-pill ${actionClass(act)}">${escapeHtml(act)}</span>
         </div>
         <div class="watch-row watch-meta">
-          <span>${a.asset_id}</span>
+          <span>${escapeHtml(a.asset_id)}</span>
           <span>conf ${confStr}</span>
         </div>
       `;
@@ -173,7 +207,7 @@
       chip.type = "button";
       chip.className = "ind-chip" + (active ? " active" : "");
       const swatch = chart.getIndicatorColor(id);
-      chip.innerHTML = `<span class="ind-swatch" style="background:${swatch}"></span><span>${id}</span>`;
+      chip.innerHTML = `<span class="ind-swatch" style="background:${escapeHtml(swatch)}"></span><span>${escapeHtml(id)}</span>`;
       chip.addEventListener("click", () => {
         chart.toggleIndicator(id);
         renderIndicatorChips(detail);
@@ -245,7 +279,7 @@
       els.nnHealthList.innerHTML = healthEntries
         .map(([name, ok]) => `
           <div class="health-row">
-            <span><span class="status-dot ${ok ? "ok" : "err"}"></span>${name}</span>
+            <span><span class="status-dot ${ok ? "ok" : "err"}"></span>${escapeHtml(name)}</span>
             <span class="${ok ? "bullish" : "bearish"}">${ok ? "ONLINE" : "OFFLINE"}</span>
           </div>
         `)
@@ -280,11 +314,11 @@
 
       item.innerHTML = `
         <div class="alert-top">
-          <span><strong>${a.asset_id}</strong> <span class="action-pill ${cls}">${a.action}</span></span>
+          <span><strong>${escapeHtml(a.asset_id)}</strong> <span class="action-pill ${cls}">${escapeHtml(a.action)}</span></span>
           ${ackBtn}
         </div>
         <div class="alert-meta">
-          #${a.id} · conf ${(a.confidence * 100).toFixed(0)}% · streak ${a.consecutive_hits}${rr}
+          #${escapeHtml(a.id)} · conf ${(a.confidence * 100).toFixed(0)}% · streak ${escapeHtml(a.consecutive_hits)}${rr}
         </div>
         <div class="alert-meta">${fmtIsoShort(a.anchor_open_time_ms)}</div>
       `;
@@ -344,6 +378,21 @@
     els.wsLabel.textContent = text;
   }
 
+  function scheduleWsRefresh(flags) {
+    if (flags.assets) state.wsPendingFlags.assets = true;
+    if (flags.detail) state.wsPendingFlags.detail = true;
+    if (flags.alerts) state.wsPendingFlags.alerts = true;
+    if (state.wsDebounceTimer) return;
+    state.wsDebounceTimer = setTimeout(() => {
+      const pending = { ...state.wsPendingFlags };
+      state.wsPendingFlags = { assets: false, detail: false, alerts: false };
+      state.wsDebounceTimer = null;
+      if (pending.assets) refreshAssets().catch(() => {});
+      if (pending.detail) refreshActiveDetail().catch(() => {});
+      if (pending.alerts) refreshAlerts().catch(() => {});
+    }, 150);
+  }
+
   function connectWebSocket() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${window.location.host}/ws/live`;
@@ -354,6 +403,11 @@
     ws.onopen = () => {
       state.reconnectDelayMs = 1000;
       setWsBadge("connected", "LIVE");
+      if (state.wsHasConnectedOnce) {
+        // Resync state missed during a disconnect/reconnect gap
+        scheduleWsRefresh({ assets: true, detail: true, alerts: true });
+      }
+      state.wsHasConnectedOnce = true;
     };
 
     ws.onmessage = (evt) => {
@@ -361,15 +415,15 @@
       try { msg = JSON.parse(evt.data); } catch (_e) { return; }
       if (msg.type === "connected") return;
 
-      // Refresh affected views cleanly on live push events
+      // Coalesce burst events (candle_update + prediction + alert) cleanly
       if (msg.type === "candle_update" || msg.type === "prediction" || msg.type === "status") {
-        refreshAssets().catch(() => {});
-        if (msg.asset_id === state.activeAssetId) {
-          refreshActiveDetail().catch(() => {});
-        }
+        scheduleWsRefresh({
+          assets: true,
+          detail: msg.asset_id === state.activeAssetId,
+          alerts: false,
+        });
       } else if (msg.type === "alert") {
-        refreshAlerts().catch(() => {});
-        refreshAssets().catch(() => {});
+        scheduleWsRefresh({ assets: true, detail: false, alerts: true });
       }
     };
 
@@ -457,6 +511,7 @@
     state.refreshTimer = setInterval(() => {
       refreshAssets().catch(() => {});
       refreshActiveDetail().catch(() => {});
+      refreshAlerts().catch(() => {});
     }, 30000);
   }
 

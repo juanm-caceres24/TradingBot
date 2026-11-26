@@ -211,7 +211,7 @@ class TradeAnalyzer:
                 ),
             )
 
-        # Reject active directional contradiction between models
+        # Reject active directional contradiction or flat forecast below threshold
         if (sig_act == "LONG" and expected_move_pct < 0.0) or (
             sig_act == "SHORT" and expected_move_pct > 0.0
         ):
@@ -225,6 +225,20 @@ class TradeAnalyzer:
                 reason=(
                     f"Conflicting models: signal={sig_act} ({sig_prob:.1%}) "
                     f"vs candle forecast={expected_move_pct:+.2%}"
+                ),
+            )
+
+        if abs(expected_move_pct) < self._cfg.min_expected_move_pct:
+            return TradeAnalysis(
+                action="HOLD",
+                expected_move_pct=round(expected_move_pct, 6),
+                estimated_tp=None,
+                estimated_sl=None,
+                risk_reward=None,
+                confidence=round(sig_prob, 4),
+                reason=(
+                    f"Cross-confirmed {sig_act} filtered by expected move "
+                    f"({expected_move_pct:+.2%} < {self._cfg.min_expected_move_pct:.2%})"
                 ),
             )
 

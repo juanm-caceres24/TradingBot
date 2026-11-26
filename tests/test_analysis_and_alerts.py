@@ -116,6 +116,61 @@ class TestReconstructionAndTradeAnalyzer(unittest.TestCase):
         res_none = analyzer.analyze(100.0)
         self.assertEqual(res_none.action, "HOLD")
 
+    def test_trade_analyzer_short_rr_and_dual_min_move_rejections(self) -> None:
+        analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.60,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.01,
+            ),
+            TripleBarrierConfig(take_profit_pct=0.02, stop_loss_pct=0.01),
+        )
+        bearish_candles = (
+            PredictedCandle(1, HOUR_MS, 100.0, 100.5, 98.5, 99.0, 0.9),
+            PredictedCandle(2, 2 * HOUR_MS, 99.0, 99.5, 97.0, 97.5, 0.8),
+        )
+        short_sig = SignalPrediction(hold_prob=0.10, long_prob=0.10, short_prob=0.80)
+
+        # Dual cross-confirmed SHORT
+        res_dual_short = analyzer.analyze(100.0, predicted_candles=bearish_candles, signal=short_sig)
+        self.assertEqual(res_dual_short.action, "SHORT")
+        self.assertAlmostEqual(res_dual_short.estimated_tp or 0.0, 97.0)
+        self.assertAlmostEqual(res_dual_short.estimated_sl or 0.0, 100.5)
+        self.assertGreaterEqual(res_dual_short.risk_reward or 0.0, 5.0)
+
+        # Candle-only SHORT
+        res_c_short = analyzer.analyze(100.0, predicted_candles=bearish_candles, signal=None)
+        self.assertEqual(res_c_short.action, "SHORT")
+
+        # Signal-only SHORT
+        res_s_short = analyzer.analyze(100.0, predicted_candles=(), signal=short_sig)
+        self.assertEqual(res_s_short.action, "SHORT")
+        self.assertAlmostEqual(res_s_short.estimated_tp or 0.0, 98.0)
+        self.assertAlmostEqual(res_s_short.estimated_sl or 0.0, 101.0)
+
+        # Dual-model rejection when expected_move_pct < min_expected_move_pct despite strong signal & good R:R
+        tiny_move_candles = (
+            PredictedCandle(1, HOUR_MS, 100.0, 100.6, 99.9, 100.4, 0.9),
+        )
+        long_sig = SignalPrediction(hold_prob=0.10, long_prob=0.80, short_prob=0.10)
+        res_small = analyzer.analyze(100.0, predicted_candles=tiny_move_candles, signal=long_sig)
+        self.assertEqual(res_small.action, "HOLD")
+        self.assertIn("expected move", res_small.reason)
+
+        # Poor R:R rejection across signal-only and candle-only
+        poor_rr_analyzer = TradeAnalyzer(
+            AnalysisConfig(min_signal_confidence=0.60, min_risk_reward=3.0, min_expected_move_pct=0.01),
+            TripleBarrierConfig(take_profit_pct=0.02, stop_loss_pct=0.01),  # RR=2.0 < 3.0
+        )
+        res_poor_sig = poor_rr_analyzer.analyze(100.0, predicted_candles=(), signal=long_sig)
+        self.assertEqual(res_poor_sig.action, "HOLD")
+        self.assertIn("filtered by R:R", res_poor_sig.reason)
+
+        poor_rr_candles = (PredictedCandle(1, HOUR_MS, 100.0, 102.0, 97.0, 101.5, 0.9),)  # RR = 2/3 = 0.67
+        res_poor_c = analyzer.analyze(100.0, predicted_candles=poor_rr_candles, signal=None)
+        self.assertEqual(res_poor_c.action, "HOLD")
+        self.assertIn("filtered by R:R", res_poor_c.reason)
+
 
 class TestAlertEvaluator(unittest.TestCase):
     def _make_snapshot(
@@ -124,7 +179,7 @@ class TestAlertEvaluator(unittest.TestCase):
         action: str,
         confidence: float = 0.80,
         move_pct: float = 0.02,
-        rr: float = 2.0,
+        rr: float | None = 2.0,
     ) -> PredictionSnapshot:
         return PredictionSnapshot(
             asset_id="btc_1h",
@@ -186,13 +241,70 @@ class TestAlertEvaluator(unittest.TestCase):
         self.assertIsNone(evaluator.evaluate(self._make_snapshot(6, "HOLD")))
         self.assertEqual(evaluator.status_dict()["streak_count"], 0)
 
-        # Bar 7..9: flip to SHORT (streak 1 at bar 7, streak 2 at bar 8 -> cooldown 3/3 at bar 8 -> FIRES SHORT!)
+        # Bar 7..8: flip to SHORT (streak 1 at bar 7, streak 2 at bar 8 -> cooldown 3/3 at bar 8 -> FIRES SHORT!)
         self.assertIsNone(evaluator.evaluate(self._make_snapshot(7, "SHORT")))
         ev3 = evaluator.evaluate(self._make_snapshot(8, "SHORT"))
         self.assertIsNotNone(ev3)
         assert ev3 is not None
         self.assertEqual(ev3.action, "SHORT")
         self.assertEqual(ev3.consecutive_hits, 2)
+
+    def test_alert_evaluator_edge_cases_and_gap_handling(self) -> None:
+        raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        raw["alerts"] = {
+            "enabled": False,
+            "actions": ["LONG", "SHORT"],
+            "min_confidence": 0.70,
+            "min_risk_reward": 1.5,
+            "min_expected_move_pct": 0.01,
+            "consecutive_candles": 1,
+            "cooldown_candles": 0,
+        }
+        disabled_eval = AlertEvaluator(parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent))
+        self.assertIsNone(disabled_eval.evaluate(self._make_snapshot(1, "LONG")))
+
+        # Enable with consecutive=1 and cooldown=0 -> fires every bar with rule single_bar_threshold
+        raw["alerts"]["enabled"] = True
+        ev_single = AlertEvaluator(parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent))
+        # Threshold rejections: low confidence, low expected move, low R:R, and risk_reward=None
+        self.assertIsNone(ev_single.evaluate(self._make_snapshot(1, "LONG", confidence=0.50)))
+        self.assertIsNone(ev_single.evaluate(self._make_snapshot(2, "LONG", move_pct=0.002)))
+        self.assertIsNone(ev_single.evaluate(self._make_snapshot(3, "LONG", rr=1.0)))
+        self.assertIsNone(ev_single.evaluate(self._make_snapshot(4, "LONG", rr=None)))
+
+        a1 = ev_single.evaluate(self._make_snapshot(5, "LONG"))
+        self.assertIsNotNone(a1)
+        assert a1 is not None
+        self.assertEqual(a1.rule_name, "single_bar_threshold")
+        # Direct LONG -> SHORT flip with cooldown=0 fires immediately on next bar
+        a2 = ev_single.evaluate(self._make_snapshot(6, "SHORT"))
+        self.assertIsNotNone(a2)
+        assert a2 is not None
+        self.assertEqual(a2.action, "SHORT")
+
+        # seed_last_anchor blocks older/equal bars, reset clears all state
+        ev_single.seed_last_anchor(10 * HOUR_MS)
+        self.assertIsNone(ev_single.evaluate(self._make_snapshot(10, "LONG")))
+        ev_single.reset()
+        self.assertEqual(ev_single.status_dict()["total_emitted"], 0)
+        self.assertIsNotNone(ev_single.evaluate(self._make_snapshot(1, "LONG")))
+
+        # 24/7 market: a missing bar gap breaks a consecutive_candles=2 streak
+        raw["alerts"]["consecutive_candles"] = 2
+        ev_247 = AlertEvaluator(parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent))
+        self.assertIsNone(ev_247.evaluate(self._make_snapshot(1, "LONG")))
+        # Jump from bar 1 to bar 3 (missing bar 2) -> streak resets to 1, does NOT fire
+        self.assertIsNone(ev_247.evaluate(self._make_snapshot(3, "LONG")))
+        self.assertEqual(ev_247.status_dict()["streak_count"], 1)
+
+        # Sessions market: overnight/weekend gap preserves consecutive streak
+        raw["market"]["market_schedule"] = "sessions"
+        ev_sess = AlertEvaluator(parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent))
+        self.assertIsNone(ev_sess.evaluate(self._make_snapshot(1, "LONG")))
+        fired = ev_sess.evaluate(self._make_snapshot(10, "LONG"))
+        self.assertIsNotNone(fired)
+        assert fired is not None
+        self.assertEqual(fired.consecutive_hits, 2)
 
 
 class TestEndToEndPredictionEngine(unittest.TestCase):
@@ -205,6 +317,7 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
 
         srv_c, th_c, port_c = _make_mock_nn_server(341, bullish_rel, latency_us=12)
         srv_s, th_s, port_s = _make_mock_nn_server(341, [0.10, 0.80, 0.10], latency_us=8)
+        srv_e, th_e, port_e = _make_mock_nn_server(341, [0.33, 0.67], latency_us=4)
 
         try:
             raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -222,6 +335,14 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
                 "port": port_s,
                 "schema_path": "",
             }
+            raw["neural_networks"]["extra_models"] = {
+                "regime_head": {
+                    "enabled": True,
+                    "host": "127.0.0.1",
+                    "port": port_e,
+                    "schema_path": "",
+                }
+            }
             raw["alerts"]["consecutive_candles"] = 2
             asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
 
@@ -233,11 +354,12 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
 
             engine = PredictionEngine(asset, clock_ms=lambda: end_ms)
             infos = engine.verify_models()
-            self.assertEqual(set(infos.keys()), {"candle_predictor", "signal_classifier"})
+            self.assertEqual(set(infos.keys()), {"candle_predictor", "signal_classifier", "regime_head"})
 
             evaluator = AlertEvaluator(asset, clock_ms=lambda: end_ms)
             snap1 = engine.predict(candles[:-1])
             self.assertEqual(len(snap1.predicted_candles), 7)
+            self.assertEqual(snap1.extra_outputs.get("regime_head"), (0.33, 0.67))
             assert snap1.analysis is not None
             self.assertEqual(snap1.analysis.action, "LONG")
             self.assertIsNone(evaluator.evaluate(snap1))
@@ -249,13 +371,14 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
             self.assertEqual(alert.action, "LONG")
             self.assertEqual(alert.consecutive_hits, 2)
 
-            # Verify JSON serialization works cleanly
+            # Verify JSON serialization works cleanly including extra_outputs
             encoded = json.loads(snapshot_to_json(snap2))
             self.assertEqual(encoded["asset_id"], "btc_1h")
             self.assertEqual(len(encoded["predicted_candles"]), 7)
             self.assertEqual(encoded["analysis"]["action"], "LONG")
+            self.assertEqual(encoded["extra_outputs"]["regime_head"], [0.33, 0.67])
         finally:
-            for srv, th in ((srv_c, th_c), (srv_s, th_s)):
+            for srv, th in ((srv_c, th_c), (srv_s, th_s), (srv_e, th_e)):
                 srv.shutdown()
                 srv.server_close()
                 th.join(timeout=2.0)
