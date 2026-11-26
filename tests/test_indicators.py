@@ -11,6 +11,7 @@ from tradingbot.indicators import (
     BaseIndicator,
     BollingerBandsIndicator,
     EMAIndicator,
+    INDICATOR_REGISTRY,
     IndicatorEngine,
     IndicatorError,
     RSIIndicator,
@@ -156,7 +157,11 @@ class TestBuiltinIndicators(unittest.TestCase):
             def compute(self, candles: list[Candle]) -> dict[str, list[float | None]]:
                 return {"flag": [1.0 if c.is_bullish else -1.0 for c in candles]}
 
+        with self.assertRaises(IndicatorError):
+            register_indicator("not_a_class", 123)  # type: ignore[arg-type]
+
         register_indicator("dummy_test", DummyIndicator)
+        self.addCleanup(INDICATOR_REGISTRY.pop, "dummy_test", None)
         engine = IndicatorEngine(
             [
                 IndicatorConfig(id="sma_3", type="sma", params={"period": 3}, use_in_nn=False, plot="overlay"),

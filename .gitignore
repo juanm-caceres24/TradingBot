@@ -21,6 +21,7 @@ env/
 data/
 models/
 logs/
+*.csv
 *.db
 *.db-wal
 *.db-shm

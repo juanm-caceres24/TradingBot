@@ -10,6 +10,7 @@ import os
 import socket
 import struct
 import tempfile
+import threading
 import unittest
 import urllib.error
 import urllib.request
@@ -27,6 +28,7 @@ from tradingbot.web.websocket import (
     OPCODE_PING,
     OPCODE_PONG,
     OPCODE_TEXT,
+    WebSocketHub,
     compute_accept_key,
     read_frame,
 )
@@ -234,6 +236,11 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
                     self.assertEqual(code, 200)
                     self.assertTrue(ack_resp["acknowledged"])
 
+                    # Second ack on the same existing alert remains idempotent 200
+                    code_ack2, ack_resp2 = _http_json(f"{base}/api/alerts/1/ack", method="POST")
+                    self.assertEqual(code_ack2, 200)
+                    self.assertTrue(ack_resp2["acknowledged"])
+
                     code, after_ack = _http_json(f"{base}/api/alerts?since_id=0&unacknowledged=true")
                     self.assertEqual(code, 200)
                     self.assertEqual(after_ack["count"], 0)
@@ -315,6 +322,160 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
             out = buf.getvalue()
             self.assertIn("Web Dashboard listening on http://127.0.0.1:", out)
             self.assertIn("stopped cleanly after 1 poll cycle(s)", out)
+
+    def test_api_error_paths_disabled_alerts_cors_ws_backpressure_and_concurrency(self) -> None:
+        # 1) WebSocketHub queue-full backpressure drops oldest frame cleanly
+        hub = WebSocketHub(max_queue_size=2)
+        sub = hub.register("live")
+        hub.publish_event({"type": "e1"})
+        hub.publish_event({"type": "e2"})
+        hub.publish_event({"type": "e3"})
+        f1 = sub.send_queue.get_nowait()
+        f2 = sub.send_queue.get_nowait()
+        assert f1 is not None and f2 is not None
+        self.assertIn(b'"e2"', f1)
+        self.assertIn(b'"e3"', f2)
+        hub.unregister(sub)
+
+        start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
+        clock = {"now": start_ms + 100 * HOUR_MS + 10_000}
+        mono = {"t": 100.0}
+
+        btc_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        btc_asset["provider"] = {"preset_path": "../providers/synthetic.json"}
+        btc_asset["neural_networks"]["candle_predictor"]["enabled"] = False
+        btc_asset["neural_networks"]["signal_classifier"]["enabled"] = False
+
+        # 2) Disabled notifications.api_enabled -> 403 on alerts REST + WS endpoints
+        cfg_disabled = parse_config_dict(
+            {
+                "storage": {"db_path": ":memory:", "wal_mode": False, "busy_timeout_ms": 5000},
+                "web": {"enabled": True, "host": "127.0.0.1", "port": 0, "visible_candles": 70},
+                "notifications": {"api_enabled": False, "webhooks": []},
+                "assets": [btc_asset],
+            },
+            base_dir=BTC_1H_ASSET_PATH.parent,
+        )
+        with SQLiteCandleStore(":memory:") as store:
+            orch = BotOrchestrator(
+                cfg_disabled,
+                store,
+                clock_ms=lambda: clock["now"],
+                sleep_fn=lambda _s: None,
+                monotonic_fn=lambda: mono["t"],
+            )
+            web = DashboardServer(orch, host="127.0.0.1", port=0)
+            host, port = web.start()
+            base = f"http://{host}:{port}"
+            try:
+                # Pre-init /latest includes full asset metadata & indicator_types
+                code_pre, pre_latest = _http_json(f"{base}/api/assets/btc_1h/latest")
+                self.assertEqual(code_pre, 200)
+                self.assertEqual(pre_latest["provider"], "synthetic")
+                self.assertEqual(pre_latest["symbol"], "BTCUSDT")
+                self.assertEqual(pre_latest["timeframe"], "1h")
+                self.assertIn("rsi_14", pre_latest["indicator_types"])
+
+                # 403 on disabled alerts API & /ws/alerts
+                self.assertEqual(_http_json(f"{base}/api/alerts")[0], 403)
+                self.assertEqual(_http_json(f"{base}/api/alerts/1/ack", method="POST")[0], 403)
+
+                with socket.create_connection((host, port), timeout=3.0) as s:
+                    req = (
+                        "GET /ws/alerts HTTP/1.1\r\n"
+                        f"Host: {host}:{port}\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: close\r\n"
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n"
+                    ).encode("ascii")
+                    s.sendall(req)
+                    status_line = s.recv(4096).decode("utf-8", errors="replace").splitlines()[0]
+                    self.assertIn("403", status_line)
+
+                # Non-ASCII Sec-WebSocket-Key -> 400 (never 500)
+                with socket.create_connection((host, port), timeout=3.0) as s:
+                    req = (
+                        "GET /ws/live HTTP/1.1\r\n"
+                        f"Host: {host}:{port}\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: close\r\n"
+                        "Sec-WebSocket-Key: café\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n"
+                    ).encode("utf-8")
+                    s.sendall(req)
+                    status_line = s.recv(4096).decode("utf-8", errors="replace").splitlines()[0]
+                    self.assertIn("400", status_line)
+
+                # CORS preflight OPTIONS -> 204
+                opt_req = urllib.request.Request(f"{base}/api/assets", method="OPTIONS")
+                with urllib.request.urlopen(opt_req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 204)
+                    self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+            finally:
+                web.stop()
+
+        # 3) Query validation 400s, ack 404/idempotency, and concurrent POST /api/actions/poll
+        cfg_enabled = parse_config_dict(
+            {
+                "storage": {"db_path": ":memory:", "wal_mode": False, "busy_timeout_ms": 5000},
+                "web": {"enabled": True, "host": "127.0.0.1", "port": 0, "visible_candles": 70},
+                "notifications": {"api_enabled": True, "webhooks": []},
+                "assets": [btc_asset],
+            },
+            base_dir=BTC_1H_ASSET_PATH.parent,
+        )
+        with SQLiteCandleStore(":memory:") as store:
+            orch = BotOrchestrator(
+                cfg_enabled,
+                store,
+                clock_ms=lambda: clock["now"],
+                sleep_fn=lambda _s: None,
+                monotonic_fn=lambda: mono["t"],
+            )
+            web = DashboardServer(orch, host="127.0.0.1", port=0)
+            host, port = web.start()
+            base = f"http://{host}:{port}"
+            try:
+                # Poll via API BEFORE explicit orch.initialize() -> auto-initializes safely!
+                errors: list[str] = []
+
+                def _worker() -> None:
+                    try:
+                        c, _ = _http_json(f"{base}/api/actions/poll", method="POST", body={"asset_id": "btc_1h"})
+                        if c != 200:
+                            errors.append(f"unexpected status {c}")
+                    except Exception as exc:  # pragma: no cover
+                        errors.append(str(exc))
+
+                threads = [threading.Thread(target=_worker) for _ in range(4)]
+                for t in threads:
+                    t.start()
+                orch.poll_due_assets(force_all=True)
+                for t in threads:
+                    t.join(timeout=5.0)
+                self.assertEqual(errors, [])
+
+                # Invalid query params & malformed JSON -> 400
+                self.assertEqual(_http_json(f"{base}/api/assets/btc_1h/latest?visible=2")[0], 400)
+                self.assertEqual(_http_json(f"{base}/api/alerts?limit=0")[0], 400)
+                self.assertEqual(_http_json(f"{base}/api/alerts?since_id=abc")[0], 400)
+                self.assertEqual(_http_json(f"{base}/api/alerts?unacknowledged=maybe")[0], 400)
+
+                bad_req = urllib.request.Request(
+                    f"{base}/api/actions/poll",
+                    data=b"{not-json",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(bad_req, timeout=3.0)
+                self.assertEqual(ctx.exception.code, 400)
+
+                # Nonexistent alert ack -> 404
+                self.assertEqual(_http_json(f"{base}/api/alerts/999/ack", method="POST")[0], 404)
+            finally:
+                web.stop()
 
 
 if __name__ == "__main__":

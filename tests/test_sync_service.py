@@ -233,6 +233,33 @@ class TestSyncService(unittest.TestCase):
         self.assertEqual(r3.chunks_fetched, 1)
         self.assertEqual(fake_provider.call_count, 2)
 
+    def test_provider_cache_isolates_distinct_overrides_and_weekly_sync_works(self) -> None:
+        raw1 = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        raw1["provider"] = {"preset_path": "../providers/synthetic.json", "synthetic": {"seed": 1, "base_price": 1000.0, "volatility": 0.01, "drift": 0.0, "base_volume": 10.0}}
+        raw2 = copy.deepcopy(raw1)
+        raw2["id"] = "eth_1h"
+        raw2["provider"]["synthetic"]["seed"] = 99
+        raw2["provider"]["synthetic"]["base_price"] = 5000.0
+
+        a1 = parse_asset_dict(raw1, base_dir=BTC_1H_ASSET_PATH.parent)
+        a2 = parse_asset_dict(raw2, base_dir=BTC_1H_ASSET_PATH.parent)
+        a1_copy = parse_asset_dict(raw1, base_dir=BTC_1H_ASSET_PATH.parent)
+
+        mon_start = parse_iso_to_ms("2024-01-01T00:00:00Z")
+        week_ms = 7 * 86_400_000
+        service = SyncService(self.store, clock_ms=lambda: mon_start + 10 * week_ms)
+        self.assertIs(service.get_provider(a1.provider), service.get_provider(a1_copy.provider))
+        self.assertIsNot(service.get_provider(a1.provider), service.get_provider(a2.provider))
+
+        # Weekly 1w backfill must upsert 5 Monday bars and record 0 false empty ranges
+        weekly_asset = _make_synthetic_asset("btc_1w", timeframe="1w", max_candles=50)
+        rep = service.backfill_asset(weekly_asset, start_ms=mon_start, end_ms=mon_start + 5 * week_ms)
+        self.assertEqual(rep.candles_upserted, 5)
+        self.assertEqual(rep.empty_ranges_recorded, 0)
+        # Re-running same weekly backfill is a no-op
+        rep2 = service.backfill_asset(weekly_asset, start_ms=mon_start, end_ms=mon_start + 5 * week_ms)
+        self.assertEqual(rep2.chunks_fetched, 0)
+
 
 class TestBackfillAppCLI(unittest.TestCase):
     def test_cli_dry_run_backfill_and_sync_now_end_to_end(self) -> None:
@@ -311,6 +338,20 @@ class TestBackfillAppCLI(unittest.TestCase):
             with SQLiteCandleStore(db_path) as store:
                 self.assertEqual(store.count_candles("synthetic", "BTCUSDT", "1h"), 24)
                 self.assertEqual(store.count_candles("synthetic", "ETHUSDT", "1h"), 12)
+
+            # 4) Controlled CLI error exit codes
+            self.assertEqual(
+                backfill_app.main([str(bot_cfg_path), "--sync-now", "--start", "2025-01-01"]),
+                2,
+            )
+            self.assertEqual(
+                backfill_app.main([str(bot_cfg_path), "--start", "2025-01-05", "--end", "2025-01-01"]),
+                2,
+            )
+            self.assertEqual(
+                backfill_app.main([str(bot_cfg_path), "--asset", "nonexistent", "--sync-now"]),
+                1,
+            )
 
 
 if __name__ == "__main__":

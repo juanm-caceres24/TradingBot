@@ -23,7 +23,7 @@ configs/bot.json ──► AssetConfig (per asset/timeframe)
 ```
 
 - **Zero external dependencies:** Uses only Python's standard library (`urllib.request`, `json`, `hashlib`, `sqlite3`).
-- **Shared rate-limit throttling:** `SyncService` caches provider instances by `(type, name, base_url, endpoint)`, so multiple assets sharing the same exchange (e.g., `btc_1h` and `btc_1w` on `binance_spot`) respect one unified rate-limit delay.
+- **Shared rate-limit throttling:** `SyncService` caches provider instances by canonical full `ProviderConfig` JSON, so multiple assets sharing an identical preset (e.g., `btc_1h`, `btc_4h`, `btc_1d`, `btc_1w` on `binance_spot.json`) share one unified rate-limit throttle while distinct per-asset overrides remain isolated.
 
 ---
 
@@ -39,7 +39,7 @@ Configured completely via JSON presets (e.g. `configs/providers/binance_spot.jso
   - Computes `close_time_ms = open_time_ms + interval_ms - 1` automatically when the API omits `close_time`.
   - Sets `is_closed = (open_time_ms + interval_ms <= now_ms)`.
 - **Resilience & security:**
-  - Enforces `rate_limit_ms` between requests and retries transient HTTP `429` / `5xx` and network errors with exponential backoff.
+  - Enforces `rate_limit_ms` between requests and retries transient HTTP `{429, 500, 502, 503, 504}` and network errors with exponential backoff.
   - Optional API keys are loaded strictly from `os.environ[api_key_env]` at request time — never stored in Git.
 
 ---
@@ -75,6 +75,10 @@ Configured via `configs/providers/synthetic.json`:
 # Auto-detect and repair head/internal/tail gaps up to now for all enabled assets
 ./scripts/backfill.sh configs/bot.json --sync-now
 
-# Backfill a disabled asset explicitly (e.g. btc_1w) and ignore cached empty ranges
+# Ensure at least N closed candles exist per asset (useful before first dataset export)
+./scripts/backfill.sh configs/bot.json --sync-now --min-candles 5000
+
+# Backfill all configured assets (including disabled ones) or a specific disabled asset
+./scripts/backfill.sh configs/bot.json --sync-now --all-assets
 ./scripts/backfill.sh configs/bot.json --asset btc_1w --start 2020-01-01 --force-recheck
 ```

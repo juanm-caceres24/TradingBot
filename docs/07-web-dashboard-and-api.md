@@ -6,7 +6,7 @@ This document describes the embedded 24/7 Web Dashboard (`src/tradingbot/web/`),
 
 ## 1. Zero-Dependency Architecture
 
-Mirroring `NeuralNetwork`'s POSIX socket inference server, the entire TradingBot stack (`v0.1.0` through `v0.6.0`) runs using **Python's standard library only** — zero `pip install`, zero Node.js/npm build steps, and zero external CDNs:
+Mirroring `NeuralNetwork`'s POSIX socket inference server, the entire TradingBot stack (`v0.1.0` through `v0.6.2`) runs using **Python's standard library only** — zero `pip install`, zero Node.js/npm build steps, and zero external CDNs:
 
 ```text
 Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp / Email)
@@ -27,7 +27,7 @@ Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp 
 
 - **Multi-Asset Watchlist Sidebar:** Displays live price, timeframe, latest action (`LONG`/`SHORT`/`HOLD`), confidence, and unread alert badges for every active asset; click any card to switch charts instantaneously.
 - **HiDPI Interactive Financial Chart (`chart.js`):**
-  - Sliding window of real candles (default `70`, wheel-zoomable `20..250`, drag-to-pan, one-click `Snap Live`).
+  - Sliding window of real candles (default `70`, wheel-zoomable `15..250`, drag-to-pan, one-click `Snap Live`).
   - Dynamic indicator overlays (`SMA`, `EMA`, shaded `BollingerBands`) honoring warm-up `null` gaps cleanly (raw early candles remain visible while indicator lines start once valid).
   - **Translucent Predicted Candles:** Rendered immediately past the vertical `FORECAST` divider with opacity decaying across horizon steps + dashed `TP` / `SL` reference lines.
   - Synchronized **Volume** histogram and dynamic subcharts (**RSI** with 30/70 guides; **LazyBear Squeeze Momentum** with 4-color momentum histogram and zero-line squeeze dots).
@@ -43,14 +43,14 @@ Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp 
 | :--- | :--- | :--- |
 | `GET` | `/` | Serves the responsive Web Dashboard UI |
 | `GET` | `/health` | Server liveness (`status`, `version`, `assets_count`, `ws_clients`) |
-| `GET` | `/api/config` | Safe public UI config (`title`, `visible_candles`, `api_enabled`) |
+| `GET` | `/api/config` | Safe public UI config (`title`, `visible_candles`, `api_enabled`, `version`) |
 | `GET` | `/api/assets` | Watchlist summary for all running assets |
-| `GET` | `/api/assets/{asset_id}/latest?visible=70` | Candles, aligned indicators, latest prediction & analysis |
-| `GET` | `/api/alerts?since_id=0&asset_id=&unacknowledged=true&limit=100` | Cursor-based Alerts API (oldest-first when `since_id` is given) |
-| `POST` | `/api/alerts/{alert_id}/ack` | Acknowledge an alert (`200 OK` / `404 Not Found`) |
-| `POST` | `/api/actions/poll` | Force an immediate poll cycle (`{"asset_id": "btc_1h"}` or `{}`) |
-| `WS` | `/ws/live` | Real-time push of `candle_update`, `prediction`, `alert`, `status` |
-| `WS` | `/ws/alerts` | Real-time push of `alert` events only (for companion notification bots) |
+| `GET` | `/api/assets/{asset_id}/latest?visible=70` | Candles (`visible >= 5`), aligned indicators + `indicator_types`, latest prediction & analysis |
+| `GET` | `/api/alerts?since_id=0&asset_id=&unacknowledged=true&limit=100` | Cursor-based Alerts API (oldest-first when `since_id` is given; `403` when `notifications.api_enabled=false`) |
+| `POST` | `/api/alerts/{alert_id}/ack` | Acknowledge an alert (`200 OK`, `403 Forbidden`, or `404 Not Found`) |
+| `POST` | `/api/actions/poll` | Force a thread-safe immediate poll cycle (`{"asset_id": "btc_1h"}` or `{}`) |
+| `WS` | `/ws/live` | Real-time push (`connected` greeting followed by `candle_update`, `prediction`, `alert`, `status`) |
+| `WS` | `/ws/alerts` | Real-time push (`connected` greeting followed by `alert` events only; `403` when alerts API is disabled) |
 
 ---
 

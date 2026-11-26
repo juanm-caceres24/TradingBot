@@ -5,9 +5,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import socket
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,63 @@ class TestReplayAndCLIApps(unittest.TestCase):
                     )
                 self.assertEqual(rc_l, 0)
                 self.assertIn("stopped cleanly after 2 poll cycle(s)", buf_l.getvalue())
+
+                # 3) CLI error handling: replay --end <= --start, live unknown --asset, occupied port
+                err_buf = io.StringIO()
+                with redirect_stderr(err_buf):
+                    rc_bad_range = replay_app.main(
+                        [
+                            str(bot_cfg_path),
+                            "--asset",
+                            "btc_1h",
+                            "--start",
+                            "2025-01-10",
+                            "--end",
+                            "2025-01-01",
+                        ]
+                    )
+                self.assertEqual(rc_bad_range, 2)
+
+                with redirect_stderr(err_buf):
+                    rc_unknown_asset = live_app.main(
+                        [str(bot_cfg_path), "--asset", "nonexistent_asset", "--headless"]
+                    )
+                self.assertEqual(rc_unknown_asset, 1)
+
+                # Bind a loopback port and verify live_app catches OSError cleanly when web is enabled
+                bot_web_cfg_path = tmp_path / "bot_web.json"
+                bot_web_cfg_path.write_text(
+                    json.dumps(
+                        {
+                            "storage": {"db_path": str(db_path), "wal_mode": True, "busy_timeout_ms": 5000},
+                            "web": {"enabled": True, "host": "127.0.0.1", "port": 0, "visible_candles": 70},
+                            "notifications": {"api_enabled": True, "webhooks": []},
+                            "assets": [{"config_path": str(asset_file)}],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+                    blocker.bind(("127.0.0.1", 0))
+                    blocker.listen(1)
+                    occupied_port = blocker.getsockname()[1]
+                    with redirect_stderr(err_buf):
+                        rc_busy = live_app.main(
+                            [
+                                str(bot_web_cfg_path),
+                                "--asset",
+                                "btc_1h",
+                                "--mode",
+                                "live_only",
+                                "--web-host",
+                                "127.0.0.1",
+                                "--web-port",
+                                str(occupied_port),
+                                "--max-cycles",
+                                "1",
+                            ]
+                        )
+                    self.assertEqual(rc_busy, 1)
         finally:
             for srv, th in ((srv_c, th_c), (srv_s, th_s)):
                 srv.shutdown()

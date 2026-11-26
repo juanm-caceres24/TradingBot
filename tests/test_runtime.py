@@ -7,13 +7,16 @@ import http.server
 import json
 import os
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
 
 from tradingbot.config import WebhookConfig, parse_config_dict
 from tradingbot.models import AlertEvent, parse_iso_to_ms
-from tradingbot.runtime import BotOrchestrator, WebhookDispatcher
+from tradingbot.nn_client import NNClientError
+from tradingbot.providers import ProviderError
+from tradingbot.runtime import BotOrchestrator, EventBus, WebhookDispatcher
 from tradingbot.storage import SQLiteCandleStore
 from test_nn_client import _make_mock_nn_server
 
@@ -243,6 +246,225 @@ class TestBotOrchestrator(unittest.TestCase):
                 srv.shutdown()
                 srv.server_close()
                 th.join(timeout=2.0)
+
+    def test_event_bus_isolation_and_webhook_edge_cases(self) -> None:
+        bus = EventBus()
+        seen: list[str] = []
+
+        def _broken(_ev: dict[str, Any]) -> None:
+            raise RuntimeError("boom")
+
+        def _good(ev: dict[str, Any]) -> None:
+            seen.append(str(ev.get("type")))
+
+        bus.subscribe(_broken)
+        bus.subscribe(_good)
+        bus.publish({"type": "ping"})
+        self.assertEqual(seen, ["ping"])
+
+        bus.unsubscribe(_good)
+        bus.publish({"type": "pong"})
+        self.assertEqual(seen, ["ping"])
+
+        # Webhook with missing auth env var and unreachable port returns structured failure
+        os.environ.pop("MISSING_WH_ENV_TOKEN", None)
+        alert = AlertEvent(
+            alert_id=1,
+            asset_id="btc_1h",
+            provider="synthetic",
+            symbol="BTCUSDT",
+            timeframe="1h",
+            anchor_open_time_ms=HOUR_MS,
+            created_at_ms=HOUR_MS + 1,
+            action="LONG",
+            confidence=0.8,
+            consecutive_hits=1,
+            rule_name="single_bar_threshold",
+            payload_json="{}",
+        )
+        dispatcher = WebhookDispatcher(
+            [
+                WebhookConfig(
+                    name="dead_hook",
+                    url="http://127.0.0.1:1/unreachable",
+                    enabled=True,
+                    timeout_sec=0.5,
+                    auth_token_env="MISSING_WH_ENV_TOKEN",
+                )
+            ]
+        )
+        results = dispatcher.dispatch(alert)
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].success)
+        self.assertIsNone(results[0].status_code)
+
+    def test_runtime_hardening_gap_error_non_persist_open_candle_restart_and_empty_loop(self) -> None:
+        srv_s, th_s, port_s = _make_mock_nn_server(341, [0.05, 0.85, 0.10], latency_us=5)
+        try:
+            start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
+            clock = {"now": start_ms + 120 * HOUR_MS + 10_000}
+            mono = {"t": 100.0}
+
+            def _make_cfg(
+                *,
+                mode: str = "sync_live",
+                persist_to_db: bool = True,
+                predict_on_open: bool = False,
+                signal_port: int = port_s,
+                signal_enabled: bool = True,
+                consecutive: int = 1,
+                asset_enabled: bool = True,
+            ) -> Any:
+                btc = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+                btc["enabled"] = asset_enabled
+                btc["provider"] = {"preset_path": "../providers/synthetic.json"}
+                btc["runtime"]["mode"] = mode
+                btc["runtime"]["persist_to_db"] = persist_to_db
+                btc["runtime"]["predict_on_open_candle"] = predict_on_open
+                btc["runtime"]["poll_interval_sec"] = 1.0
+                btc["neural_networks"]["candle_predictor"]["enabled"] = False
+                btc["neural_networks"]["signal_classifier"] = {
+                    "enabled": signal_enabled,
+                    "host": "127.0.0.1",
+                    "port": signal_port,
+                    "schema_path": "",
+                }
+                btc["alerts"]["consecutive_candles"] = consecutive
+                btc["alerts"]["cooldown_candles"] = 0
+                return parse_config_dict(
+                    {
+                        "storage": {"db_path": ":memory:", "wal_mode": False, "busy_timeout_ms": 5000},
+                        "web": {"enabled": False, "host": "127.0.0.1", "port": 8000, "visible_candles": 70},
+                        "notifications": {"api_enabled": True, "webhooks": []},
+                        "assets": [btc],
+                    },
+                    base_dir=BTC_1H_ASSET_PATH.parent,
+                )
+
+            # 1) sync_live + persist_to_db=False populates RAM buffer without touching SQLite
+            with SQLiteCandleStore(":memory:") as store:
+                orch = BotOrchestrator(
+                    _make_cfg(persist_to_db=False, signal_enabled=False),
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                orch.initialize()
+                self.assertEqual(store.count_candles("synthetic", "BTCUSDT", "1h"), 0)
+                snap = orch.state.get("btc_1h")
+                assert snap is not None
+                self.assertGreaterEqual(len(snap.candles), 80)
+
+                # Multi-bar jump (3 hours) works in RAM without SQLite writes
+                clock["now"] += 3 * HOUR_MS
+                outcome = orch.poll_asset("btc_1h")
+                self.assertIsNone(outcome.error)
+                self.assertTrue(outcome.new_closed_candle)
+                self.assertEqual(store.count_candles("synthetic", "BTCUSDT", "1h"), 0)
+
+            # 2) Multi-bar gap-heal ProviderError is caught cleanly (never crashes poll_once)
+            with SQLiteCandleStore(":memory:") as store:
+                orch = BotOrchestrator(
+                    _make_cfg(persist_to_db=True, signal_enabled=False),
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                orch.initialize()
+                clock["now"] += 4 * HOUR_MS
+
+                def _fail_backfill(*_a: Any, **_kw: Any) -> Any:
+                    raise ProviderError("Simulated network outage during gap-heal")
+
+                orch._sync_service.backfill_asset = _fail_backfill  # type: ignore[method-assign]
+                outcome = orch.poll_asset("btc_1h")
+                self.assertIsNotNone(outcome.error)
+                self.assertIn("Simulated network outage", outcome.error or "")
+
+            # 3) predict_on_open_candle=True predicts in RAM without saving prediction or emitting alert
+            with SQLiteCandleStore(":memory:") as store:
+                orch = BotOrchestrator(
+                    _make_cfg(predict_on_open=True, consecutive=1),
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                orch.initialize()
+                preds_after_init = len(store.get_predictions("synthetic", "BTCUSDT", "1h", asset_id="btc_1h"))
+                alerts_after_init = len(store.get_alerts(asset_id="btc_1h"))
+                self.assertEqual(alerts_after_init, 1)
+
+                # Poll same open hour (+30s): predicts in RAM, does NOT persist prediction or emit alert
+                clock["now"] += 30_000
+                o_open = orch.poll_asset("btc_1h")
+                self.assertFalse(o_open.new_closed_candle)
+                self.assertIsNotNone(o_open.prediction)
+                self.assertIsNone(o_open.alert)
+                self.assertEqual(
+                    len(store.get_predictions("synthetic", "BTCUSDT", "1h", asset_id="btc_1h")),
+                    preds_after_init,
+                )
+                self.assertEqual(len(store.get_alerts(asset_id="btc_1h")), alerts_after_init)
+
+                # 4) Restarting a new orchestrator on the SAME SQLite store seeds AlertEvaluator
+                # so the exact same anchor candle does NOT re-emit a duplicate alert!
+                orch2 = BotOrchestrator(
+                    _make_cfg(predict_on_open=False, consecutive=1),
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                init2 = orch2.initialize()
+                self.assertIsNone(init2[0].alert)
+                self.assertEqual(len(store.get_alerts(asset_id="btc_1h")), alerts_after_init)
+
+            # 5) Offline NN server: strict_nn_startup=False tolerates outage, True raises NNClientError
+            with SQLiteCandleStore(":memory:") as store:
+                offline_cfg = _make_cfg(signal_port=1)
+                orch_soft = BotOrchestrator(
+                    offline_cfg,
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                outcomes_soft = orch_soft.initialize(strict_nn_startup=False)
+                self.assertEqual(len(outcomes_soft), 1)
+                self.assertIsNotNone(outcomes_soft[0].error)
+
+                orch_strict = BotOrchestrator(
+                    offline_cfg,
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                with self.assertRaises(NNClientError):
+                    orch_strict.initialize(strict_nn_startup=True)
+
+            # 6) Empty runners run_loop waits via stop_event instead of busy-spinning
+            with SQLiteCandleStore(":memory:") as store:
+                empty_orch = BotOrchestrator(
+                    _make_cfg(asset_enabled=False),
+                    store,
+                    clock_ms=lambda: clock["now"],
+                    sleep_fn=lambda _s: None,
+                    monotonic_fn=lambda: mono["t"],
+                )
+                self.assertEqual(len(empty_orch.runners), 0)
+                t0 = time.monotonic()
+                cycles = empty_orch.run_loop(max_cycles=1)
+                elapsed = time.monotonic() - t0
+                self.assertEqual(cycles, 1)
+                self.assertGreaterEqual(elapsed, 0.4)
+        finally:
+            srv_s.shutdown()
+            srv_s.server_close()
+            th_s.join(timeout=2.0)
 
 
 if __name__ == "__main__":

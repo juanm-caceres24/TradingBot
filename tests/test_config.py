@@ -225,6 +225,34 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_asset_dict(raw_act, base_dir=self.asset_dir)
 
+        # Triple barrier >= 1.0 rejected (prevents non-positive SL/TP prices)
+        for bad_tb in ({"take_profit_pct": 1.0, "stop_loss_pct": 0.02}, {"take_profit_pct": 0.02, "stop_loss_pct": 1.5}):
+            raw_tb = copy.deepcopy(self.asset_raw)
+            raw_tb["features"]["triple_barrier"] = bad_tb
+            with self.assertRaises(ConfigError):
+                parse_asset_dict(raw_tb, base_dir=self.asset_dir)
+
+    def test_custom_registered_indicator_accepted_by_json_config(self) -> None:
+        from tradingbot.indicators import BaseIndicator, INDICATOR_REGISTRY, register_indicator
+
+        class CustomOsc(BaseIndicator):
+            indicator_type = "custom_osc_test"
+            def _validate_params(self) -> None: pass
+            def warmup_period(self) -> int: return 0
+            def output_columns(self) -> tuple[str, ...]: return ("value",)
+            def nn_scale_kind(self, column: str) -> str: return "bounded"
+            def compute(self, candles: list) -> dict: return {"value": [0.0 for _ in candles]}
+
+        register_indicator("custom_osc_test", CustomOsc)
+        self.addCleanup(INDICATOR_REGISTRY.pop, "custom_osc_test", None)
+
+        raw = copy.deepcopy(self.asset_raw)
+        raw["indicators"].append(
+            {"id": "my_osc", "type": "custom_osc_test", "params": {}, "use_in_nn": True, "plot": "subchart"}
+        )
+        parsed = parse_asset_dict(raw, base_dir=self.asset_dir)
+        self.assertEqual(parsed.indicators[-1].type, "custom_osc_test")
+
     def test_initial_history_from_and_invalid_files(self) -> None:
         raw = copy.deepcopy(self.asset_raw)
         raw["runtime"]["initial_history_from"] = "2024-06-01T00:00:00Z"

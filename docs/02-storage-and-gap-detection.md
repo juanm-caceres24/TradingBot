@@ -45,13 +45,13 @@ Logs live and replay neural-network prediction payloads alongside `(asset_id, pr
 ### `alerts` Table
 Stores triggered trading alerts (`AlertEvent`) with a monotonically increasing `id`, `(asset_id, provider, symbol, timeframe, anchor_open_time_ms, created_at_ms, action, confidence, consecutive_hits, rule_name, payload_json, acknowledged)`:
 - Supports **cursor-based polling** via `get_alerts(since_id=N)` (returning `id > N` in ascending `id` order) so external notification consumers (Telegram, WhatsApp, email bots) never miss or duplicate alerts across restarts.
-- Supports per-asset filtering, unacknowledged-only queries, and explicit acknowledgement via `acknowledge_alert(alert_id)`.
+- Supports per-asset filtering, unacknowledged-only queries, O(log N) existence/count checks (`alert_exists(alert_id)`, `count_alerts(...)`), and explicit acknowledgement via `acknowledge_alert(alert_id)`.
 
 ---
 
 ## 3. Half-Open Time Intervals & Gap Detection (`src/tradingbot/storage/gap_detector.py`)
 
-All ranges use **UTC epoch milliseconds** and **half-open semantics `[start_ms, end_ms)`**:
+All ranges use **UTC epoch milliseconds** and **half-open semantics `[start_ms, end_ms)`**. Weekly intervals (`1w`, `Nw`) anchor to **Monday 00:00:00 UTC** (`anchor_offset_ms = 4 * 86_400_000`, matching ISO-8601 and Binance weekly candles rather than Thursday 1970-01-01 Unix epoch):
 
 ```text
 interval = 1h (3,600,000 ms)

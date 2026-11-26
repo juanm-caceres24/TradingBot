@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import http.server
 import json
 import os
@@ -280,6 +281,33 @@ class TestGenericRestProvider(unittest.TestCase):
         bad_provider = GenericRestProvider(parse_provider_dict(raw_preset), max_retries=2, sleep_fn=fake_sleep)
         with self.assertRaises(ProviderError):
             bad_provider.fetch_candles("INVALID", "1h", limit=5)
+
+    def test_invalid_json_missing_data_path_503_exhaustion_and_bool_timestamp(self) -> None:
+        _MockExchangeHandler.routes["/invalid_json"] = lambda _q, _h: (200, "{broken")
+        _MockExchangeHandler.routes["/missing_path"] = lambda _q, _h: (200, {"other": []})
+        _MockExchangeHandler.routes["/always_503"] = lambda _q, _h: (503, {"error": "down"})
+        _MockExchangeHandler.routes["/bool_ts"] = lambda _q, _h: (200, [[True, "100", "101", "99", "100", "1", 10]])
+
+        raw_preset = json.loads(BINANCE_PRESET.read_text(encoding="utf-8"))
+        raw_preset["base_url"] = self.base_url
+        raw_preset["rate_limit_ms"] = 0
+
+        for ep in ("/invalid_json", "/always_503", "/bool_ts"):
+            cfg = copy.deepcopy(raw_preset)
+            cfg["endpoint"] = ep
+            prov = GenericRestProvider(
+                parse_provider_dict(cfg), max_retries=1, retry_backoff_sec=0.0, sleep_fn=lambda _s: None
+            )
+            with self.subTest(endpoint=ep):
+                with self.assertRaises(ProviderError):
+                    prov.fetch_candles("BTCUSDT", "1h", limit=5)
+
+        cfg_mp = copy.deepcopy(raw_preset)
+        cfg_mp["endpoint"] = "/missing_path"
+        cfg_mp["response_mapping"]["data_path"] = "result.list"
+        prov_mp = GenericRestProvider(parse_provider_dict(cfg_mp), max_retries=0)
+        with self.assertRaises(ProviderError):
+            prov_mp.fetch_candles("BTCUSDT", "1h", limit=5)
 
 
 if __name__ == "__main__":

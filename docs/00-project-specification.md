@@ -10,7 +10,7 @@ Build a **modular, transparent, 24/7 multi-asset quantitative market data, indic
 
 Core guiding principles (mirrored directly from `NeuralNetwork`):
 - **Full transparency & control:** Every candle, indicator formula, feature normalization transform, gap-fill request, alert evaluation, and neural-network payload is directly implemented and inspectable.
-- **Simplicity first (YAGNI):** Keep the core dependency-free (Python standard library) and introduce optional external dependencies only where they deliver clear value (such as the embedded web dashboard & API server).
+- **Simplicity first (YAGNI):** Keep the entire codebase dependency-free (Python 3.11+ standard library only, zero `pip install`, zero Node.js build tools, zero external CDNs).
 - **Zero hardcoded parameters:** Root settings, per-asset profiles, exchange API endpoints, field mappings, database paths, indicator definitions, feature windows, per-asset neural-network servers, alert rules, webhooks, and web bindings live strictly in external JSON files. Unknown JSON keys are rejected at load time.
 - **Standardized engineering:** Modular library (`src/tradingbot/`) + thin executable apps (`apps/`), incremental unit testing, living Markdown documentation in `docs/`, and a disciplined Simplified Solo Git Flow.
 
@@ -30,7 +30,7 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 ### 3.1 Multi-Asset & Multi-Timeframe Management
 - Track an arbitrary, config-driven list of logical **assets** (identified by unique URL-safe `asset_id`, combining symbol and timeframe — e.g., `btc_1h`, `btc_1w`, `sp500_1h`, `nvda_1h`).
 - Each asset lives in its own modular JSON file under `configs/assets/` (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
-  - Its market (`symbol`, `timeframe`, `market_schedule`: `"24/7"` vs `"sessions"`).
+  - Its market (`symbol`, `timeframe`, `market_schedule`: `"24/7"` enforces strict `interval_ms` contiguity in sliding windows, replay horizon checks, and consecutive alert streaks; `"sessions"` allows weekend/holiday timestamp gaps cleanly).
   - Its data provider preset (e.g., `binance_spot` for crypto, another REST preset for equities/indices, or `synthetic` for offline tests).
   - Its runtime mode, indicator list, feature window/normalization, Triple Barrier targets, dedicated/shared/disabled neural-network endpoints, analysis thresholds, and alert rules.
 - Adding a new asset or timeframe requires **zero code changes**: add a JSON file in `configs/assets/` and register it in `configs/bot.json`.
@@ -66,7 +66,7 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 - **Per-asset modular multi-network architecture** aligned strictly with `libnn` v0.6.0 constraints (one loss + one output activation per `Network`):
   1. **Candle Predictor (`MSE` + `Linear`):** Input = $W$ normalized candles + indicators; Output = $H \times 4$ relative OHLC values used to reconstruct translucent predicted candles and projected TP/SL zones.
   2. **Signal Classifier (`CCE` + `Softmax`, optional/parallel):** Input = identical normalized feature vector; Output = 3 mutually exclusive probabilities `[HOLD, LONG, SHORT]` trained via Triple Barrier Labeling over the next $H$ candles (leveraging `libnn` v0.6.0's numerically stable fused `Softmax + CCE` backward path).
-  3. **Extensible `extra_models` map:** Supports plugging additional specialized `server_app` models per asset in the future (e.g., volatility or market-regime models) via JSON with zero core refactor.
+  3. **Extensible `extra_models` map:** Supports plugging additional specialized `server_app` models per asset via JSON; `PredictionEngine` and `ReplayEngine` query enabled extra models and expose their raw output vectors in `PredictionSnapshot.extra_outputs` and JSON API responses while `candle_predictor` and `signal_classifier` drive `TradeAnalysis`.
   - Because each logical asset (`btc_1h`, `btc_1w`, `nvda_1h`) configures its own endpoints independently, an asset can run dedicated trained models on its own ports, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., `btc_1w` for macro charting only).
 - **Exact `NeuralNetwork` v0.6.0 interoperability:**
   - Export `libnn`-compatible CSV files per asset (`input_cols + target_cols` numeric columns formatted with `%.9g`).
@@ -75,8 +75,8 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
   - Connect to each enabled `server_app` via HTTP/1.1 + JSON (`GET /health`, `GET /info`, `POST /predict`), verifying `input_size` and `output_size` against `feature_schema.json` on startup.
 
 ### 3.6 Prediction Reconstruction, Trade Analysis & Alert Engine
-- Reconstruct absolute predicted OHLC candles from relative outputs while enforcing valid candle geometry (`high >= max(open, close)`, `low <= min(open, close)`).
-- Compute actionable trade analysis metrics: projected net move, maximum favorable/adverse excursion (MFE/MAE), estimated Take Profit / Stop Loss levels, Risk-Reward ratio, statistical horizon confidence, and cross-confirmation with the Signal Classifier (`[HOLD, LONG, SHORT]`).
+- Reconstruct absolute predicted OHLC candles from relative outputs while enforcing valid candle geometry (`high = max(h, l, o, c)`, `low = min(h, l, o, c)`).
+- Compute actionable trade analysis metrics (`TradeAnalysis`): recommended action (`HOLD`/`LONG`/`SHORT`), projected `expected_move_pct`, `estimated_tp`, `estimated_sl`, `risk_reward`, confidence (calibrated Softmax probability when Signal Classifier is active, or directional-consistency/R:R heuristic in candle-only mode), and human-readable reasoning.
 - **Per-asset Alert Engine (`alerts` config section):**
   - Evaluates closed-candle analysis snapshots against configurable thresholds (`actions`, `min_confidence`, `min_risk_reward`, `min_expected_move_pct`).
   - **Persistence confirmation (`consecutive_candles`):** optionally requires $N$ consecutive closed candles (e.g. 2 or 3) matching the same action above threshold before emitting an alert, filtering single-bar noise.
@@ -98,7 +98,7 @@ All modes are configurable per asset in JSON and overridable via CLI (targeting 
 - **`sync_live`:** Detect and backfill missing candles up to now, then run continuously in real time, updating the active candle, running predictions, evaluating alerts, and pushing updates to the Web UI / API.
 - **`backfill`:** Download/repair candles strictly within a requested `[start, end)` date range and exit.
 - **`live_only`:** Fetch only the minimal warm-up + visible window required for charting/inference without backfilling old historical gaps (optionally with `persist_to_db: false`).
-- **`replay`:** Step through stored historical candles from SQLite, querying the NN server(s), evaluating alerts, and streaming results to the UI/console for rapid validation.
+- **`replay`:** Step chronologically through stored historical candles from SQLite via `apps/replay_app.py`, querying the NN server(s), evaluating alerts, printing quantitative accuracy metrics (`directional_acc`, `horizon_MAE`) to console, and optionally persisting predictions/alerts or dispatching webhooks.
 
 ### 3.9 Web Dashboard (24/7 Server + LAN/Tailscale Access)
 - Embedded zero-dependency Python web server (`ThreadingHTTPServer` + native RFC 6455 WebSocket + REST API), bindable to configurable `host` (e.g. `0.0.0.0` or Tailscale IP) and `port` (e.g. `8000`), with `"enabled": false` / `--headless` support.
@@ -143,8 +143,18 @@ TradingBot/
 ├── docs/                                # Living Markdown documentation (English)
 │   ├── 00-project-specification.md
 │   ├── 01-git-workflow.md
-│   └── 02-storage-and-gap-detection.md
-├── scripts/                             # Helper shell scripts (test.sh, etc.)
+│   ├── 02-storage-and-gap-detection.md
+│   ├── 03-providers-and-backfill.md
+│   ├── 04-indicators-features-and-datasets.md
+│   ├── 05-nn-client-analysis-and-alerts.md
+│   ├── 06-runtime-replay-and-webhooks.md
+│   └── 07-web-dashboard-and-api.md
+├── scripts/                             # Helper shell scripts
+│   ├── test.sh
+│   ├── backfill.sh
+│   ├── export_dataset.sh
+│   ├── live.sh
+│   └── replay.sh
 ├── configs/                             # External JSON configs (zero hardcoding)
 │   ├── bot.json                         # Root multi-asset configuration
 │   ├── assets/                          # Per-asset / per-timeframe profiles
@@ -155,20 +165,20 @@ TradingBot/
 │   └── providers/                       # Declarative exchange/synthetic presets
 │       ├── binance_spot.json
 │       └── synthetic.json
-├── src/tradingbot/                      # Reusable core library
+├── src/tradingbot/                      # Reusable core library (zero external deps)
 │   ├── __init__.py
-│   ├── models.py                        # Timeframe, Candle, TimeRange, predictions, AlertEvent
-│   ├── config.py                        # Strict multi-asset JSON loader & validator
+│   ├── models.py                        # Timeframe (Monday-aligned 1w), Candle, TimeRange, predictions, AlertEvent
+│   ├── config.py                        # Strict multi-asset JSON loader & dynamic indicator validator
 │   ├── storage/                         # CandleStore ABC, SQLiteCandleStore, GapDetector
-│   ├── providers/                       # [v0.2.0] GenericRestProvider, SyntheticProvider
-│   ├── indicators/                      # [v0.3.0] Registry + SMA, EMA, RSI, ATR, BB, Squeeze
-│   ├── features/                        # [v0.3.0] Normalization, window builder, schema
-│   ├── dataset/                         # [v0.3.0] libnn CSV exporter & nn_config generator
-│   ├── nn_client/                       # [v0.4.0] Multi-model HTTP client for server_app
-│   ├── analysis/                        # [v0.4.0] Candle reconstruction, trade analysis, alert engine
-│   ├── runtime/                         # [v0.5.0] Multi-asset sync_live, backfill, live_only, replay, webhooks
-│   └── web/                             # [v0.6.0] FastAPI + WS + Alerts API + vendored Lightweight Charts
-├── apps/                                # [v0.2.0+] Thin CLI entrypoints
+│   ├── providers/                       # GenericRestProvider, SyntheticProvider, SyncService (backfill/sync)
+│   ├── indicators/                      # Registry + SMA, EMA, RSI, ATR, BB, SqueezeMomentum
+│   ├── features/                        # Normalization, window builder, FeatureSchema
+│   ├── dataset/                         # libnn v0.6.0 CSV exporter & nn_config.json generator
+│   ├── nn_client/                       # Multi-model HTTP client for server_app
+│   ├── analysis/                        # Candle reconstruction, TradeAnalyzer, PredictionEngine, AlertEvaluator
+│   ├── runtime/                         # Multi-asset BotOrchestrator (sync_live, live_only), ReplayEngine, EventBus, webhooks
+│   └── web/                             # Stdlib ThreadingHTTPServer + RFC 6455 WebSockets + Alerts API + HiDPI Canvas UI
+├── apps/                                # Thin CLI entrypoints
 │   ├── backfill_app.py
 │   ├── export_dataset_app.py
 │   ├── live_app.py
@@ -191,3 +201,4 @@ TradingBot/
 | **`v0.5.0`** | Completed | Multi-asset continuous runtime orchestrator (`sync_live`, `live_only`, `replay`), open vs. closed candle transitions, prediction & alert DB persistence, outbound webhook dispatcher, `apps/live_app.py --headless`, `apps/replay_app.py`. | Simulated clock multi-asset live-loop tests, restart gap-recovery tests, webhook dispatch & replay pipeline tests. |
 | **`v0.6.0`** | Completed | Embedded zero-dependency Web Dashboard & External API (`ThreadingHTTPServer` + native RFC 6455 WebSocket `/ws/live` & `/ws/alerts` + REST `/api/assets`, `/api/alerts?since_id=`, `/api/alerts/{id}/ack`, `/api/actions/poll` + HiDPI HTML5 Canvas financial charts): multi-asset watchlist, sliding candle window, volume, overlays, synchronized RSI & Squeeze Momentum subcharts, translucent predicted candles with TP/SL lines, prediction & alerts panel, LAN/Tailscale ready. | API & WebSocket contract tests (including RFC 6455 handshake, Ping/Pong, static asset & path-traversal safety, cursor-based external alert consumer simulation, and `live_app.py` embedded web launch). |
 | **`v0.6.1`** | Completed | Additional calibrated multi-timeframe BTC asset profiles (`configs/assets/btc_4h.json`, `configs/assets/btc_1d.json`) registered in `configs/bot.json` with dedicated non-overlapping NN server ports (`8084/8085`, `8086/8087`) and timeframe-scaled Triple Barrier / alert thresholds. | Strict config validation and unique NN port verification across all configured BTC timeframes (`1h`, `4h`, `1d`, `1w`). |
+| **`v0.6.2`** | Completed | Full codebase hardening & doc sync: Monday 00:00 UTC alignment for weekly (`1w`) timeframes, dynamic `INDICATOR_REGISTRY` config validation, full provider cache key, thread-safe `AssetRunner` & `BotOrchestrator.poll_asset`, resilient gap-heal error catching, SQL `alert_exists`/`count_alerts`, `market_schedule` contiguity enforcement, `extra_models` integration, HTML escaping & Canvas UI fixes, expanded regression tests, and docs/README parity. | Expanded regression test suite covering weekly alignment, concurrency, custom indicators via JSON, `pct_relative`/`stride`, `SHORT` & edge-case analysis/alerts, HTTP 400/403/404, WS backpressure, and CLI error exits (`./scripts/test.sh` + `node --check`). |
