@@ -35,7 +35,7 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(cfg.storage.db_path, "data/market.db")
         self.assertEqual(cfg.web.visible_candles, 70)
         self.assertTrue(cfg.notifications.api_enabled)
-        self.assertEqual(len(cfg.assets), 4)
+        self.assertEqual(len(cfg.assets), 3)
         self.assertEqual(len(cfg.enabled_assets), 3)
 
         btc_1h = cfg.get_asset("btc_1h")
@@ -61,11 +61,12 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8086)
         self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8087)
 
-        btc_1w = cfg.get_asset("btc_1w")
-        # Inline override in bot.json disabled btc_1w
-        self.assertFalse(btc_1w.enabled)
-        self.assertEqual(btc_1w.market.timeframe, "1w")
-        self.assertFalse(btc_1w.neural_networks.candle_predictor.enabled)
+        # Verify inline override in bot.json can disable an asset
+        raw_override = copy.deepcopy(self.bot_raw)
+        raw_override["assets"][2]["enabled"] = False
+        cfg_override = parse_config_dict(raw_override, base_dir=self.bot_dir)
+        self.assertFalse(cfg_override.get_asset("btc_1d").enabled)
+        self.assertEqual(len(cfg_override.enabled_assets), 2)
 
         # Verify all configured NN server ports across assets are distinct (zero collisions)
         all_ports = [

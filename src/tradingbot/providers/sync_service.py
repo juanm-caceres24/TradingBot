@@ -52,7 +52,7 @@ class SyncService:
         self._sleep_fn = sleep_fn
         self._monotonic_fn = monotonic_fn
         # Cache provider instances by config so multiple assets sharing one exchange
-        # (e.g. btc_1h and btc_1w on binance_spot) share its rate-limit throttle.
+        # (e.g. btc_1h, btc_4h, and btc_1d on binance_spot) share its rate-limit throttle.
         self._providers: dict[str, BaseProvider] = {}
 
     def get_provider(self, config: ProviderConfig) -> BaseProvider:

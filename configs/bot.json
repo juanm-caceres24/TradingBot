@@ -24,10 +24,6 @@
     },
     {
       "config_path": "assets/btc_1d.json"
-    },
-    {
-      "config_path": "assets/btc_1w.json",
-      "enabled": false
     }
   ]
 }
