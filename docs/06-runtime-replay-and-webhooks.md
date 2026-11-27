@@ -58,8 +58,9 @@ Whenever a closed candle satisfies an asset's alert rules (`consecutive_candles`
 
 Steps chronologically through stored SQLite candles in O(N) time (exploiting strict causality of all built-in indicators), evaluating real `NeuralNetwork` `server_app` predictions and alert triggers without waiting days for live candles to close.
 
-`ReplaySummary` and `apps/replay_app.py` report two complementary post-hoc metric layers:
+`ReplaySummary` and `apps/replay_app.py` report three complementary post-hoc diagnostic layers (and support `--signal-only` to benchmark `signal_classifier` independently of `candle_predictor`):
 - **All-bar candle forecast metrics:** `directional_acc` and `horizon_MAE` across all bars with a valid future horizon `t+H` (when `candle_predictor` is enabled).
+- **HOLD rejection funnel (`hold_reasons`):** counts exactly how many `HOLD` bars were filtered by `signal_threshold`, `conflict`, `min_move`, or `min_rr`.
 - **Filtered actionable signal metrics (`LONG` / `SHORT` only):** works across dual-model, candle-only, and signal-only modes, reporting `signal_trades_evaluated`, directional accuracy overall and per side (`LONG` / `SHORT`), mean signed horizon return (`signal_avg_return_pct`), and conservative Triple-Barrier outcome counts (`tb_tp_hits`, `tb_sl_hits`, `tb_timeouts`, where same-bar SL+TP collisions resolve conservatively to SL, matching `FeaturePipeline.encode_signal_target`).
 
 ---
@@ -74,6 +75,6 @@ Steps chronologically through stored SQLite candles in O(N) time (exploiting str
 ./scripts/live.sh configs/bot.json --asset btc_1h --mode live_only --headless
 
 # Historical replay over stored SQLite candles
-# (supports --start, --end, --step-delay, --persist-predictions, --persist-alerts, --dispatch-webhooks, --verbose)
+# (supports --start, --end, --signal-only, --step-delay, --persist-predictions, --persist-alerts, --dispatch-webhooks, --verbose)
 ./scripts/replay.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-02-01 --verbose
 ```

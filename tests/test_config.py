@@ -54,8 +54,10 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1h.features.triple_barrier.stop_loss_atr, 1.0)
         self.assertTrue(btc_1h.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_1h.analysis.signal_decision_mode, "directional_edge")
-        self.assertAlmostEqual(btc_1h.analysis.min_directional_prob, 0.35)
-        self.assertAlmostEqual(btc_1h.analysis.min_directional_ratio, 1.5)
+        self.assertEqual(btc_1h.analysis.tp_sl_source, "triple_barrier")
+        self.assertFalse(btc_1h.analysis.require_candle_confirmation)
+        self.assertAlmostEqual(btc_1h.analysis.min_directional_prob, 0.40)
+        self.assertAlmostEqual(btc_1h.analysis.min_directional_ratio, 1.8)
         self.assertEqual(btc_1h.alerts.consecutive_candles, 2)
         self.assertEqual(btc_1h.alerts.cooldown_candles, 5)
         self.assertEqual(btc_1h.alerts.actions, ("LONG", "SHORT"))
@@ -82,7 +84,11 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8082)
         self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8083)
         self.assertEqual(btc_4h.analysis.signal_decision_mode, "directional_edge")
-        self.assertAlmostEqual(btc_4h.training.weight_decay, 0.015)
+        self.assertFalse(btc_4h.analysis.require_candle_confirmation)
+        self.assertAlmostEqual(btc_4h.analysis.min_directional_prob, 0.40)
+        self.assertAlmostEqual(btc_4h.analysis.min_directional_ratio, 1.8)
+        self.assertAlmostEqual(btc_4h.training.weight_decay, 0.012)
+        self.assertAlmostEqual(btc_4h.training.dropout_rate, 0.25)
 
         btc_1d = cfg.get_asset("btc_1d")
         self.assertTrue(btc_1d.enabled)
@@ -96,9 +102,15 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8084)
         self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8085)
         self.assertEqual(btc_1d.analysis.signal_decision_mode, "directional_edge")
+        self.assertTrue(btc_1d.analysis.require_candle_confirmation)
+        self.assertAlmostEqual(btc_1d.analysis.min_directional_prob, 0.38)
+        self.assertAlmostEqual(btc_1d.analysis.min_directional_ratio, 1.6)
+        self.assertEqual(btc_1d.alerts.consecutive_candles, 1)
         self.assertEqual(btc_1d.training.hidden_layers, (32, 16))
         self.assertEqual(btc_1d.training.batch_size, 32)
-        self.assertAlmostEqual(btc_1d.training.weight_decay, 0.02)
+        self.assertAlmostEqual(btc_1d.training.learning_rate, 0.0003)
+        self.assertAlmostEqual(btc_1d.training.min_learning_rate, 0.00003)
+        self.assertAlmostEqual(btc_1d.training.weight_decay, 0.015)
         self.assertAlmostEqual(btc_1d.training.dropout_rate, 0.3)
         self.assertEqual(btc_1d.training.early_stopping_patience, 25)
 
@@ -270,6 +282,14 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_asset_dict(raw_ind, base_dir=self.asset_dir)
 
+        # htf_context base_timeframe must match asset.market.timeframe and be a valid non-empty timeframe
+        for bad_base_tf in ("4h", "", "invalid_tf", 60):
+            raw_htf = copy.deepcopy(self.asset_raw)
+            htf_ind = next(ind for ind in raw_htf["indicators"] if ind["type"] == "htf_context")
+            htf_ind["params"]["base_timeframe"] = bad_base_tf
+            with self.assertRaises(ConfigError):
+                parse_asset_dict(raw_htf, base_dir=self.asset_dir)
+
         # Empty alert actions
         raw_act = copy.deepcopy(self.asset_raw)
         raw_act["alerts"]["actions"] = []
@@ -289,7 +309,7 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 parse_asset_dict(raw_tb, base_dir=self.asset_dir)
 
-        # Analysis directional_edge validation & backwards-compatible argmax defaults
+        # Analysis directional_edge & tp_sl_source validation + backwards-compatible defaults
         for bad_an in (
             {"signal_decision_mode": "voting"},
             {"min_directional_prob": 0.0},
@@ -297,6 +317,8 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             {"min_directional_prob": True},
             {"min_directional_ratio": 0.9},
             {"min_directional_ratio": False},
+            {"tp_sl_source": "fixed"},
+            {"require_candle_confirmation": "no"},
         ):
             raw_an = copy.deepcopy(self.asset_raw)
             raw_an["analysis"] = {**raw_an["analysis"], **bad_an}
@@ -311,6 +333,8 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         }
         parsed_legacy = parse_asset_dict(raw_legacy_an, base_dir=self.asset_dir)
         self.assertEqual(parsed_legacy.analysis.signal_decision_mode, "argmax")
+        self.assertEqual(parsed_legacy.analysis.tp_sl_source, "candles")
+        self.assertTrue(parsed_legacy.analysis.require_candle_confirmation)
         self.assertAlmostEqual(parsed_legacy.analysis.min_directional_prob, 0.35)
         self.assertAlmostEqual(parsed_legacy.analysis.min_directional_ratio, 1.5)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tradingbot.analysis import (
     AlertEvaluator,
@@ -48,6 +48,22 @@ class ReplaySummary:
     tb_tp_hits: int = 0
     tb_sl_hits: int = 0
     tb_timeouts: int = 0
+    hold_reasons: dict[str, int] = field(default_factory=dict)
+
+
+def _classify_hold_reason(reason: str) -> str:
+    """Bucket a TradeAnalysis HOLD reason into a concise replay rejection category."""
+    if reason.startswith("Signal below threshold") or reason.startswith("Signal-only HOLD"):
+        return "signal_threshold"
+    if reason.startswith("Conflicting models"):
+        return "conflict"
+    if "expected move" in reason:
+        return "min_move"
+    if "filtered by R:R" in reason:
+        return "min_rr"
+    if reason.startswith("No neural network"):
+        return "no_models"
+    return "other"
 
 
 StepCallback = Callable[[int, Candle, PredictionSnapshot, AlertEvent | None], None]
@@ -172,6 +188,12 @@ class ReplayEngine:
         tb_tp_hits = 0
         tb_sl_hits = 0
         tb_timeouts = 0
+        hold_reasons: dict[str, int] = {
+            "signal_threshold": 0,
+            "conflict": 0,
+            "min_move": 0,
+            "min_rr": 0,
+        }
         emitted_alerts: list[AlertEvent] = []
 
         for idx in range(first_anchor, n):
@@ -217,6 +239,9 @@ class ReplayEngine:
 
             predictions_made += 1
             action_counts[analysis.action] = action_counts.get(analysis.action, 0) + 1
+            if analysis.action == "HOLD":
+                bucket = _classify_hold_reason(analysis.reason)
+                hold_reasons[bucket] = hold_reasons.get(bucket, 0) + 1
 
             # Post-hoc evaluation when actual future bar `idx + horizon` exists and matches horizon time.
             if idx + horizon < n:
@@ -339,4 +364,5 @@ class ReplayEngine:
             tb_tp_hits=tb_tp_hits,
             tb_sl_hits=tb_sl_hits,
             tb_timeouts=tb_timeouts,
+            hold_reasons=hold_reasons,
         )

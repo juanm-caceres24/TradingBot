@@ -10,9 +10,11 @@ from tradingbot.indicators.builtin import (
     ATRIndicator,
     BollingerBandsIndicator,
     EMAIndicator,
+    HTFContextIndicator,
     RSIIndicator,
     SMAIndicator,
     SqueezeMomentumIndicator,
+    VolatilityRegimeIndicator,
 )
 from tradingbot.models import Candle
 
@@ -23,6 +25,8 @@ INDICATOR_REGISTRY: dict[str, type[BaseIndicator]] = {
     "atr": ATRIndicator,
     "bollinger": BollingerBandsIndicator,
     "squeeze_momentum": SqueezeMomentumIndicator,
+    "volatility_regime": VolatilityRegimeIndicator,
+    "htf_context": HTFContextIndicator,
 }
 
 
