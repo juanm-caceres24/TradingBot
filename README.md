@@ -2,7 +2,7 @@
 
 A modular, transparent, zero-hardcode **Python** multi-asset market data collector, technical indicator engine, dataset generator, neural-network prediction client, alert API, and 24/7 web dashboard designed to integrate seamlessly with the C++17 **`NeuralNetwork` (`libnn` v0.7.0)** training engine and HTTP inference server.
 
-## Features (`v0.7.0`)
+## Features (`v0.8.0`)
 
 - **Zero External Dependencies (Python 3.11+ Standard Library Only):** Runs out of the box on any Linux PC, 24/7 server, or Raspberry Pi with zero `pip install`, zero Node.js build tools, and zero external CDNs.
 - **Multi-Asset & Multi-Timeframe Architecture:** Manage independent logical assets (ships ready with `btc_1h`, `btc_4h`, and `btc_1d`, easily extensible to `nvda_1h`, `sp500_1d`, etc.) via strictly validated modular JSON files (`configs/bot.json`, `configs/assets/*.json`, `configs/providers/*.json`).

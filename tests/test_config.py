@@ -289,6 +289,8 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             {"grad_clip_norm": -1.0},
             {"lr_schedule": "linear"},
             {"hidden_layers": [64, 0]},
+            {"hidden_activation": "softmax"},
+            {"hidden_activation": "linear"},
         ):
             raw_tr = copy.deepcopy(self.asset_raw)
             raw_tr["training"] = bad_tr

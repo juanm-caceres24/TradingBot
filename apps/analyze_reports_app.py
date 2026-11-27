@@ -64,8 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _discover_report_files(raw_paths: Sequence[str]) -> list[Path]:
-    files: list[Path] = []
+def _discover_report_files(raw_paths: Sequence[str]) -> list[tuple[Path, bool]]:
+    """Return (path, discovered_from_directory) pairs preserving CLI order."""
+    files: list[tuple[Path, bool]] = []
     seen: set[Path] = set()
     for raw in raw_paths:
         p = Path(raw)
@@ -74,12 +75,12 @@ def _discover_report_files(raw_paths: Sequence[str]) -> list[Path]:
                 resolved = candidate.resolve()
                 if resolved not in seen:
                     seen.add(resolved)
-                    files.append(candidate)
+                    files.append((candidate, True))
         elif p.is_file():
             resolved = p.resolve()
             if resolved not in seen:
                 seen.add(resolved)
-                files.append(p)
+                files.append((p, False))
         else:
             raise ReportError(f"Path not found: '{p}'")
     return files
@@ -96,8 +97,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
 
         reports: list[TrainingReportSummary] = []
-        for f in files:
-            reports.append(load_training_report(f))
+        for f, from_dir in files:
+            try:
+                reports.append(load_training_report(f))
+            except ReportError as exc:
+                if from_dir:
+                    print(f"Warning: skipping non-report JSON '{f}': {exc}", file=sys.stderr)
+                    continue
+                raise
+
+        if not reports:
+            print("Error: No valid training report JSON files found.", file=sys.stderr)
+            return 1
 
         if args.task is not None:
             reports = [r for r in reports if r.task == args.task]
