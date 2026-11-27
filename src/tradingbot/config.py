@@ -38,6 +38,7 @@ _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
 _VALID_TB_MODES = frozenset({"pct", "atr_multiple"})
 _VALID_SIGNAL_DECISION_MODES = frozenset({"argmax", "directional_edge"})
+_VALID_TP_SL_SOURCES = frozenset({"candles", "triple_barrier"})
 _VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
 _VALID_NN_HIDDEN_ACTIVATIONS = frozenset({"relu", "tanh", "sigmoid", "leaky_relu"})
 _VALID_NN_CANDLE_LOSSES = frozenset({"mse", "huber"})
@@ -357,6 +358,8 @@ class AnalysisConfig:
     signal_decision_mode: str = "argmax"
     min_directional_prob: float = 0.35
     min_directional_ratio: float = 1.5
+    tp_sl_source: str = "candles"
+    require_candle_confirmation: bool = True
 
 
 @dataclass(frozen=True)
@@ -944,6 +947,21 @@ def parse_asset_dict(
             _require_key(item_obj, "type", sec), f"{sec}.type", valid_ind_types
         )
         ind_params = _expect_dict(item_obj.get("params", {}), f"{sec}.params")
+        if ind_type == "htf_context":
+            raw_base_tf = ind_params.get("base_timeframe")
+            if not isinstance(raw_base_tf, str) or not raw_base_tf.strip():
+                raise ConfigError(
+                    f"'{sec}.params.base_timeframe' must be a non-empty timeframe string"
+                )
+            try:
+                parsed_base_tf = Timeframe.parse(raw_base_tf).label
+            except ValueError as exc:
+                raise ConfigError(f"Invalid '{sec}.params.base_timeframe': {exc}") from exc
+            if parsed_base_tf != timeframe:
+                raise ConfigError(
+                    f"'{sec}.params.base_timeframe' ({parsed_base_tf!r}) must match "
+                    f"'{section}.market.timeframe' ({timeframe!r})"
+                )
         indicators.append(
             IndicatorConfig(
                 id=ind_id,
@@ -1073,6 +1091,8 @@ def parse_asset_dict(
                 "signal_decision_mode",
                 "min_directional_prob",
                 "min_directional_ratio",
+                "tp_sl_source",
+                "require_candle_confirmation",
             }
         ),
         a_sec,
@@ -1109,6 +1129,15 @@ def parse_asset_dict(
             a_raw.get("min_directional_ratio", 1.5),
             f"{a_sec}.min_directional_ratio",
             min_value=1.0,
+        ),
+        tp_sl_source=_expect_enum(
+            a_raw.get("tp_sl_source", "candles"),
+            f"{a_sec}.tp_sl_source",
+            _VALID_TP_SL_SOURCES,
+        ),
+        require_candle_confirmation=_expect_bool(
+            a_raw.get("require_candle_confirmation", True),
+            f"{a_sec}.require_candle_confirmation",
         ),
     )
 

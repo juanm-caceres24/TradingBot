@@ -71,12 +71,18 @@ class SyncService:
     @staticmethod
     def default_min_candles_for_asset(asset: AssetConfig) -> int:
         """Compute a sensible initial candle count when the DB has no history yet."""
-        max_indicator_hint = 0
-        for ind in asset.indicators:
-            for val in ind.params.values():
-                if isinstance(val, int) and not isinstance(val, bool) and val > max_indicator_hint:
-                    max_indicator_hint = val
-        return max(100, max_indicator_hint + asset.features.input_window + asset.features.forecast_horizon + 50)
+        from tradingbot.indicators import IndicatorEngine
+
+        max_warmup = IndicatorEngine(asset.indicators).max_warmup(nn_only=False)
+        if (
+            asset.features.normalization == "atr_relative"
+            or asset.features.triple_barrier.mode == "atr_multiple"
+        ):
+            max_warmup = max(max_warmup, asset.features.atr_period)
+        return max(
+            100,
+            max_warmup + asset.features.input_window + asset.features.forecast_horizon + 50,
+        )
 
     def plan_backfill(
         self,

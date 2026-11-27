@@ -9,6 +9,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -70,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dispatch-webhooks",
         action="store_true",
         help="Send triggered replay alerts to configured outbound webhooks.",
+    )
+    parser.add_argument(
+        "--signal-only",
+        action="store_true",
+        help="Disable candle_predictor during replay to benchmark signal_classifier alone.",
     )
     parser.add_argument(
         "--verbose",
@@ -142,19 +148,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             busy_timeout_ms=cfg.storage.busy_timeout_ms,
         ) as store:
             for asset in selected_assets:
+                run_asset = asset
+                mode_tag = ""
+                if args.signal_only:
+                    if not asset.neural_networks.signal_classifier.enabled:
+                        raise ConfigError(
+                            f"Asset '{asset.id}' cannot run with --signal-only because "
+                            "signal_classifier is disabled."
+                        )
+                    disabled_cp = dataclasses.replace(
+                        asset.neural_networks.candle_predictor, enabled=False
+                    )
+                    run_asset = dataclasses.replace(
+                        asset,
+                        neural_networks=dataclasses.replace(
+                            asset.neural_networks, candle_predictor=disabled_cp
+                        ),
+                    )
+                    mode_tag = " [signal-only]"
+
                 candles = store.get_candles(
-                    asset.provider.name,
-                    asset.market.symbol,
-                    asset.market.timeframe,
+                    run_asset.provider.name,
+                    run_asset.market.symbol,
+                    run_asset.market.timeframe,
                     start_ms=start_ms,
                     end_ms=end_ms,
                     closed_only=True,
                 )
                 print(
-                    f"=== Replay '{asset.id}' ({asset.market.symbol} {asset.market.timeframe}) | "
-                    f"stored_closed_bars={len(candles)} ==="
+                    f"=== Replay '{run_asset.id}' ({run_asset.market.symbol} {run_asset.market.timeframe})"
+                    f"{mode_tag} | stored_closed_bars={len(candles)} ==="
                 )
-                engine = ReplayEngine(asset)
+                engine = ReplayEngine(run_asset)
                 engine.verify_models()
                 summary = engine.run(
                     candles,
@@ -181,6 +206,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"| directional_acc={dir_str} | horizon_MAE={mae_str} "
                     f"| alerts={summary.alerts_triggered}"
                 )
+                if summary.hold_reasons:
+                    funnel_parts = [
+                        f"{k}={summary.hold_reasons[k]}"
+                        for k in ("signal_threshold", "conflict", "min_move", "min_rr")
+                        if k in summary.hold_reasons
+                    ]
+                    for extra_k in ("no_models", "other"):
+                        if summary.hold_reasons.get(extra_k, 0) > 0:
+                            funnel_parts.append(f"{extra_k}={summary.hold_reasons[extra_k]}")
+                    if funnel_parts:
+                        print("  hold_funnel: " + " | ".join(funnel_parts))
                 if summary.signal_trades_evaluated > 0:
                     sig_acc_pct = (
                         100.0 * summary.signal_directional_hits / summary.signal_trades_evaluated

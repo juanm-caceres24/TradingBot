@@ -5,9 +5,11 @@ from tradingbot.indicators.builtin import (
     ATRIndicator,
     BollingerBandsIndicator,
     EMAIndicator,
+    HTFContextIndicator,
     RSIIndicator,
     SMAIndicator,
     SqueezeMomentumIndicator,
+    VolatilityRegimeIndicator,
 )
 from tradingbot.indicators.registry import (
     INDICATOR_REGISTRY,
@@ -21,6 +23,7 @@ __all__ = [
     "BaseIndicator",
     "BollingerBandsIndicator",
     "EMAIndicator",
+    "HTFContextIndicator",
     "INDICATOR_REGISTRY",
     "IndicatorEngine",
     "IndicatorError",
@@ -28,6 +31,7 @@ __all__ = [
     "SMAIndicator",
     "SqueezeMomentumIndicator",
     "VALID_SCALE_KINDS",
+    "VolatilityRegimeIndicator",
     "create_indicator",
     "register_indicator",
 ]

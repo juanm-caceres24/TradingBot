@@ -338,10 +338,133 @@ class TestReconstructionAndTradeAnalyzer(unittest.TestCase):
         self.assertIn("argmax=HOLD 80.0%", res_argmax_hold.reason)
         self.assertNotIn("< 55.0%", res_argmax_hold.reason)
 
-        # Invalid signal_decision_mode raises ValueError defensively
+        # Dual-model with symmetric regularized candles (candle R:R ~1.08 < 1.5):
+        # tp_sl_source="candles" rejects by R:R, whereas tp_sl_source="triple_barrier" uses ATR barriers (R:R=1.5)
+        symmetric_bullish = (
+            PredictedCandle(1, HOUR_MS, 100.0, 101.2, 98.9, 100.4, 0.9),
+            PredictedCandle(2, 2 * HOUR_MS, 100.4, 101.3, 98.8, 100.6, 0.8),
+        )
+        res_sym_candles = edge_analyzer.analyze(
+            100.0, predicted_candles=symmetric_bullish, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_sym_candles.action, "HOLD")
+        self.assertIn("filtered by R:R", res_sym_candles.reason)
+
+        tb_dual_analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.55,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.005,
+                signal_decision_mode="directional_edge",
+                min_directional_prob=0.35,
+                min_directional_ratio=1.5,
+                tp_sl_source="triple_barrier",
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        res_sym_tb = tb_dual_analyzer.analyze(
+            100.0, predicted_candles=symmetric_bullish, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_sym_tb.action, "LONG")
+        self.assertAlmostEqual(res_sym_tb.estimated_tp or 0.0, 103.0)
+        self.assertAlmostEqual(res_sym_tb.estimated_sl or 0.0, 98.0)
+        self.assertAlmostEqual(res_sym_tb.risk_reward or 0.0, 1.5)
+        self.assertIn("TB R:R=1.50", res_sym_tb.reason)
+
+        # Signal-driven mode (require_candle_confirmation=False): opposing bearish candles
+        # remain visible on chart without vetoing a qualifying LONG signal
+        sig_driven_analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.55,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.005,
+                signal_decision_mode="directional_edge",
+                min_directional_prob=0.35,
+                min_directional_ratio=1.5,
+                tp_sl_source="triple_barrier",
+                require_candle_confirmation=False,
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        res_sig_driven = sig_driven_analyzer.analyze(
+            100.0, predicted_candles=bearish_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_sig_driven.action, "LONG")
+        self.assertAlmostEqual(res_sig_driven.confidence, 0.38)
+        self.assertAlmostEqual(res_sig_driven.estimated_tp or 0.0, 103.0)
+        self.assertAlmostEqual(res_sig_driven.estimated_sl or 0.0, 98.0)
+        self.assertAlmostEqual(res_sig_driven.expected_move_pct, 0.03)
+        self.assertIn("Signal-driven LONG", res_sig_driven.reason)
+        self.assertIn("candle_forecast=-1.20%", res_sig_driven.reason)
+
+        # Signal-driven mode must still enforce min_expected_move_pct (low-vol ATR regime) and min_risk_reward
+        res_sig_driven_low_vol = sig_driven_analyzer.analyze(
+            100.0, predicted_candles=bearish_candles, signal=edge_long, anchor_atr=0.1
+        )
+        self.assertEqual(res_sig_driven_low_vol.action, "HOLD")
+        self.assertIn("filtered by expected move", res_sig_driven_low_vol.reason)
+        self.assertAlmostEqual(res_sig_driven_low_vol.confidence, 0.38)
+        self.assertAlmostEqual(res_sig_driven_low_vol.expected_move_pct, 0.0015)
+
+        sig_driven_high_rr = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.55,
+                min_risk_reward=2.0,
+                min_expected_move_pct=0.005,
+                signal_decision_mode="directional_edge",
+                min_directional_prob=0.35,
+                min_directional_ratio=1.5,
+                tp_sl_source="triple_barrier",
+                require_candle_confirmation=False,
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        res_sig_driven_rr = sig_driven_high_rr.analyze(
+            100.0, predicted_candles=bullish_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_sig_driven_rr.action, "HOLD")
+        self.assertIn("filtered by R:R", res_sig_driven_rr.reason)
+        self.assertAlmostEqual(res_sig_driven_rr.confidence, 0.38)
+
+        sig_driven_candle_tp = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.55,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.005,
+                signal_decision_mode="directional_edge",
+                min_directional_prob=0.35,
+                min_directional_ratio=1.5,
+                tp_sl_source="candles",
+                require_candle_confirmation=False,
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        res_sig_driven_candle_rr = sig_driven_candle_tp.analyze(
+            100.0, predicted_candles=poor_rr_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_sig_driven_candle_rr.action, "HOLD")
+        self.assertIn("filtered by R:R", res_sig_driven_candle_rr.reason)
+        self.assertAlmostEqual(res_sig_driven_candle_rr.confidence, 0.38)
+
+        # Candle-predictor-only mode (signal=None) with tp_sl_source="triple_barrier" uses TB barriers
+        res_candle_only_tb = tb_dual_analyzer.analyze(
+            100.0, predicted_candles=symmetric_bullish, signal=None, anchor_atr=2.0
+        )
+        self.assertEqual(res_candle_only_tb.action, "LONG")
+        self.assertAlmostEqual(res_candle_only_tb.estimated_tp or 0.0, 103.0)
+        self.assertAlmostEqual(res_candle_only_tb.estimated_sl or 0.0, 98.0)
+        self.assertAlmostEqual(res_candle_only_tb.risk_reward or 0.0, 1.5)
+        self.assertIn("Candle-forecast only LONG", res_candle_only_tb.reason)
+
+        # Invalid signal_decision_mode / tp_sl_source raise ValueError defensively
         with self.assertRaises(ValueError):
             TradeAnalyzer(
                 AnalysisConfig(0.55, 1.5, 0.005, signal_decision_mode="invalid"),
+                TripleBarrierConfig(take_profit_pct=0.02, stop_loss_pct=0.01),
+            )
+        with self.assertRaises(ValueError):
+            TradeAnalyzer(
+                AnalysisConfig(0.55, 1.5, 0.005, tp_sl_source="invalid"),
                 TripleBarrierConfig(take_profit_pct=0.02, stop_loss_pct=0.01),
             )
 
@@ -489,9 +612,9 @@ class TestEndToEndPredictionEngine(unittest.TestCase):
             base = 0.25 * step
             bullish_rel.extend([base - 0.05, base + 0.30, base - 0.15, base + 0.10])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=12)
-        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.10, 0.80, 0.10], latency_us=8)
-        srv_e, th_e, port_e = _make_mock_nn_server(264, [0.33, 0.67], latency_us=4)
+        srv_c, th_c, port_c = _make_mock_nn_server(384, bullish_rel, latency_us=12)
+        srv_s, th_s, port_s = _make_mock_nn_server(384, [0.10, 0.80, 0.10], latency_us=8)
+        srv_e, th_e, port_e = _make_mock_nn_server(384, [0.33, 0.67], latency_us=4)
 
         try:
             raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))

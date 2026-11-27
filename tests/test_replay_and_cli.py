@@ -42,8 +42,8 @@ class TestReplayAndCLIApps(unittest.TestCase):
             base = 0.25 * step
             bullish_rel.extend([base - 0.05, base + 0.30, base - 0.15, base + 0.10])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=9)
-        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.10, 0.80, 0.10], latency_us=5)
+        srv_c, th_c, port_c = _make_mock_nn_server(384, bullish_rel, latency_us=9)
+        srv_s, th_s, port_s = _make_mock_nn_server(384, [0.10, 0.80, 0.10], latency_us=5)
 
         try:
             raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
@@ -137,9 +137,21 @@ class TestReplayAndCLIApps(unittest.TestCase):
                     )
                 self.assertEqual(rc_r, 0)
                 self.assertIn("evaluated=16", buf_r.getvalue())
+                self.assertIn("hold_funnel:", buf_r.getvalue())
                 self.assertIn("filtered_signals=10", buf_r.getvalue())
                 self.assertIn("TB(TP/SL/TO)=", buf_r.getvalue())
                 self.assertIn("ALERT LONG", buf_r.getvalue())
+
+                # --signal-only flag runs signal_classifier alone without calling candle_predictor
+                buf_so = io.StringIO()
+                with redirect_stdout(buf_so):
+                    rc_so = replay_app.main(
+                        [str(bot_cfg_path), "--asset", "btc_1h", "--signal-only"]
+                    )
+                self.assertEqual(rc_so, 0)
+                self.assertIn("[signal-only]", buf_so.getvalue())
+                self.assertIn("directional_acc=N/A", buf_so.getvalue())
+                self.assertIn("filtered_signals=10", buf_so.getvalue())
 
                 live_app = _load_app("live_app", LIVE_APP_PATH)
                 buf_l = io.StringIO()
@@ -175,6 +187,31 @@ class TestReplayAndCLIApps(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(rc_bad_range, 2)
+
+                # --signal-only with signal_classifier disabled exits cleanly with code 1
+                raw_no_sig = json.loads(json.dumps(raw_asset))
+                raw_no_sig["neural_networks"]["signal_classifier"]["enabled"] = False
+                no_sig_asset_file = tmp_path / "btc_1h_no_sig.json"
+                no_sig_asset_file.write_text(json.dumps(raw_no_sig), encoding="utf-8")
+                no_sig_bot_cfg = tmp_path / "bot_no_sig.json"
+                no_sig_bot_cfg.write_text(
+                    json.dumps(
+                        {
+                            "storage": {"db_path": str(db_path), "wal_mode": True, "busy_timeout_ms": 5000},
+                            "web": {"enabled": False, "host": "127.0.0.1", "port": 8000, "visible_candles": 70},
+                            "notifications": {"api_enabled": True, "webhooks": []},
+                            "assets": [{"config_path": str(no_sig_asset_file)}],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                err_no_sig = io.StringIO()
+                with redirect_stderr(err_no_sig):
+                    rc_no_sig = replay_app.main(
+                        [str(no_sig_bot_cfg), "--asset", "btc_1h", "--signal-only"]
+                    )
+                self.assertEqual(rc_no_sig, 1)
+                self.assertIn("cannot run with --signal-only", err_no_sig.getvalue())
 
                 with redirect_stderr(err_buf):
                     rc_unknown_asset = live_app.main(
@@ -224,7 +261,7 @@ class TestReplayAndCLIApps(unittest.TestCase):
 
     def test_replay_signal_only_short_triple_barrier_outcomes(self) -> None:
         # Calibrated SHORT edge (HOLD=0.44, LONG=0.16, SHORT=0.40) evaluated in signal-only mode
-        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.44, 0.16, 0.40], latency_us=4)
+        srv_s, th_s, port_s = _make_mock_nn_server(384, [0.44, 0.16, 0.40], latency_us=4)
         try:
             raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
             raw_asset["provider"] = {
@@ -286,6 +323,48 @@ class TestReplayAndCLIApps(unittest.TestCase):
             self.assertEqual(summary.tb_tp_hits, 3)
             self.assertEqual(summary.tb_sl_hits, 0)
             self.assertEqual(summary.tb_timeouts, 0)
+            self.assertEqual(sum(summary.hold_reasons.values()), 0)
+
+            # Verify hold_reasons funnel counts conflict rejections cleanly when candle confirmation is enabled,
+            # while require_candle_confirmation=False (btc_1h default) preserves SHORT actions
+            srv_c_up, th_c_up, port_c_up = _make_mock_nn_server(
+                384, [0.1, 0.4, 0.0, 0.3] * 6, latency_us=3
+            )
+            try:
+                raw_conflict = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+                raw_conflict["provider"] = raw_asset["provider"]
+                raw_conflict["neural_networks"]["candle_predictor"] = {
+                    "enabled": True,
+                    "host": "127.0.0.1",
+                    "port": port_c_up,
+                    "schema_path": "",
+                }
+                raw_conflict["neural_networks"]["signal_classifier"] = {
+                    "enabled": True,
+                    "host": "127.0.0.1",
+                    "port": port_s,
+                    "schema_path": "",
+                }
+                # btc_1h default (require_candle_confirmation=False): opposing candles do not veto SHORT
+                sig_driven_summary = ReplayEngine(
+                    parse_asset_dict(raw_conflict, base_dir=BTC_1H_ASSET_PATH.parent),
+                    clock_ms=lambda: start_ms + 232 * HOUR_MS,
+                ).run(candles)
+                self.assertEqual(sig_driven_summary.action_counts["SHORT"], 9)
+                self.assertEqual(sig_driven_summary.hold_reasons["conflict"], 0)
+
+                raw_conflict["analysis"]["require_candle_confirmation"] = True
+                conflict_asset = parse_asset_dict(raw_conflict, base_dir=BTC_1H_ASSET_PATH.parent)
+                conflict_summary = ReplayEngine(
+                    conflict_asset, clock_ms=lambda: start_ms + 232 * HOUR_MS
+                ).run(candles)
+                self.assertEqual(conflict_summary.action_counts["HOLD"], 9)
+                self.assertEqual(conflict_summary.hold_reasons["conflict"], 9)
+                self.assertEqual(conflict_summary.hold_reasons["signal_threshold"], 0)
+            finally:
+                srv_c_up.shutdown()
+                srv_c_up.server_close()
+                th_c_up.join(timeout=2.0)
         finally:
             srv_s.shutdown()
             srv_s.server_close()
@@ -294,9 +373,9 @@ class TestReplayAndCLIApps(unittest.TestCase):
     def test_replay_tb_whipsaw_timeout_24_7_gap_and_cli_edge_summaries(self) -> None:
         from tradingbot.models import Candle
 
-        srv_long, th_long, port_long = _make_mock_nn_server(264, [0.44, 0.40, 0.16], latency_us=4)
-        srv_short, th_short, port_short = _make_mock_nn_server(264, [0.44, 0.16, 0.40], latency_us=4)
-        srv_hold, th_hold, port_hold = _make_mock_nn_server(264, [0.80, 0.10, 0.10], latency_us=4)
+        srv_long, th_long, port_long = _make_mock_nn_server(384, [0.44, 0.40, 0.16], latency_us=4)
+        srv_short, th_short, port_short = _make_mock_nn_server(384, [0.44, 0.16, 0.40], latency_us=4)
+        srv_hold, th_hold, port_hold = _make_mock_nn_server(384, [0.80, 0.10, 0.10], latency_us=4)
 
         def _make_asset(port: int) -> dict[str, Any]:
             raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
