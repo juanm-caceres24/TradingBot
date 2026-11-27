@@ -52,6 +52,7 @@ _LIBNN_TRAINING_KEYS = frozenset(
     }
 )
 _LIBNN_SERVER_KEYS = frozenset({"host", "port", "num_workers"})
+_LIBNN_HIDDEN_ACTIVATIONS = frozenset({"relu", "tanh", "sigmoid", "leaky_relu"})
 _LIBNN_ACTIVATIONS = frozenset({"linear", "sigmoid", "tanh", "relu", "leaky_relu", "softmax"})
 _LIBNN_LOSSES = frozenset(
     {
@@ -111,8 +112,11 @@ class NNTrainingOptions:
     def __post_init__(self) -> None:
         if any(not _is_real_int(h) or h < 1 for h in self.hidden_layers):
             raise ValueError("All hidden_layers sizes must be integers >= 1")
-        if self.hidden_activation not in _LIBNN_ACTIVATIONS:
-            raise ValueError(f"Unsupported hidden_activation: {self.hidden_activation!r}")
+        if self.hidden_activation not in _LIBNN_HIDDEN_ACTIVATIONS:
+            raise ValueError(
+                f"Unsupported hidden_activation: {self.hidden_activation!r}. "
+                f"Expected one of {sorted(_LIBNN_HIDDEN_ACTIVATIONS)}."
+            )
         if self.candle_loss not in _LIBNN_CANDLE_LOSSES:
             raise ValueError(
                 f"Unsupported candle_loss: {self.candle_loss!r}. Expected 'mse' or 'huber'."
@@ -288,9 +292,18 @@ def build_nn_config_dict(
 
 def validate_nn_config_dict(cfg: dict[str, Any]) -> None:
     """Verify strict schema and value parity against NeuralNetwork v0.7.0 config.hpp."""
+    if not isinstance(cfg, dict):
+        raise ValueError("libnn config must be a JSON object")
+    missing_root = _LIBNN_ROOT_KEYS - set(cfg.keys())
+    if missing_root:
+        raise ValueError(f"Missing required root keys for libnn config: {sorted(missing_root)}")
     unknown_root = set(cfg.keys()) - _LIBNN_ROOT_KEYS
     if unknown_root:
         raise ValueError(f"Unknown root keys for libnn config: {sorted(unknown_root)}")
+
+    for sec in ("model", "training", "server"):
+        if not isinstance(cfg[sec], dict):
+            raise ValueError(f"libnn config '{sec}' must be a JSON object")
 
     unknown_model = set(cfg["model"].keys()) - _LIBNN_MODEL_KEYS
     if unknown_model:
@@ -305,16 +318,20 @@ def validate_nn_config_dict(cfg: dict[str, Any]) -> None:
     if unknown_server:
         raise ValueError(f"Unknown server keys for libnn config: {sorted(unknown_server)}")
 
-    layers = cfg["model"]["layers"]
-    if len(layers) < 2:
+    layers = cfg["model"].get("layers")
+    if not isinstance(layers, list) or len(layers) < 2:
         raise ValueError("libnn model must have at least an input and output layer")
-    if set(layers[0].keys()) != {"size"}:
+    if not isinstance(layers[0], dict) or set(layers[0].keys()) != {"size"}:
         raise ValueError("libnn input layer must contain only 'size'")
+    last_idx = len(layers) - 1
     for idx, layer in enumerate(layers[1:], start=1):
-        if set(layer.keys()) != {"size", "activation"}:
+        if not isinstance(layer, dict) or set(layer.keys()) != {"size", "activation"}:
             raise ValueError(f"libnn layer[{idx}] must contain only 'size' and 'activation'")
-        if layer["activation"] not in _LIBNN_ACTIVATIONS:
-            raise ValueError(f"Unsupported libnn activation: {layer['activation']!r}")
+        act = layer["activation"]
+        if act not in _LIBNN_ACTIVATIONS:
+            raise ValueError(f"Unsupported libnn activation: {act!r}")
+        if idx < last_idx and act == "softmax":
+            raise ValueError(f"Hidden layer[{idx}] must not use 'softmax' activation")
 
     loss = t_cfg.get("loss", "mse")
     if loss not in _LIBNN_LOSSES:

@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 _TRADING_3CLASS_NAMES = ("HOLD", "LONG", "SHORT")
-_OHLC_FIELD_NAMES = ("open", "high", "low", "close")
 
 
 class ReportError(ValueError):
@@ -49,7 +48,9 @@ def _as_float(value: Any, path: str, *, allow_none: bool = False) -> float | Non
         raise ReportError(f"Expected number at '{path}', got {type(value).__name__}")
     fval = float(value)
     if not math.isfinite(fval):
-        return None if allow_none else float("nan")
+        if allow_none:
+            return None
+        raise ReportError(f"Expected finite number at '{path}', got {value!r}")
     return fval
 
 
@@ -75,11 +76,11 @@ def _fmt_opt(value: float | None, fmt: str = ".4f", default: str = "n/a") -> str
 class ClassMetricRow:
     class_index: int
     support: int
-    actual_frequency: float
-    mean_predicted_prob: float
-    precision: float
-    recall: float
-    f1: float
+    actual_frequency: float | None
+    mean_predicted_prob: float | None
+    precision: float | None
+    recall: float | None
+    f1: float | None
 
 
 @dataclass(frozen=True)
@@ -219,15 +220,24 @@ def _compute_diagnostics(
         warnings.append("DOES_NOT_BEAT_BASELINE")
 
     if task == "classification":
+        if any(row.mean_predicted_prob is None for row in per_class) and "NON_FINITE_LOSS" not in warnings:
+            warnings.append("NON_FINITE_LOSS")
         collapsed = any(
-            (row.support > 0 and row.recall == 0.0)
-            or (row.actual_frequency >= 0.10 and row.mean_predicted_prob < 0.02)
+            (row.support > 0 and row.recall is not None and row.recall == 0.0)
+            or (
+                row.actual_frequency is not None
+                and row.actual_frequency >= 0.10
+                and row.mean_predicted_prob is not None
+                and row.mean_predicted_prob < 0.02
+            )
             for row in per_class
         )
         if collapsed:
             warnings.append("CLASS_COLLAPSE")
         miscalibrated = any(
-            abs(row.mean_predicted_prob - row.actual_frequency) > 0.15
+            row.mean_predicted_prob is not None
+            and row.actual_frequency is not None
+            and abs(row.mean_predicted_prob - row.actual_frequency) > 0.15
             for row in per_class
         )
         if miscalibrated:
@@ -236,13 +246,13 @@ def _compute_diagnostics(
         if r2 is not None and r2 < 0.0:
             warnings.append("NEGATIVE_R2")
 
-    if (
-        has_validation
-        and epochs_completed >= 10
-        and final_train_loss is not None
-        and final_train_loss > 0.0
-    ):
-        if best_val_loss is not None and best_val_loss > final_train_loss * 1.35:
+    if has_validation and epochs_completed >= 10:
+        if (
+            final_train_loss is not None
+            and final_train_loss > 0.0
+            and best_val_loss is not None
+            and best_val_loss > final_train_loss * 1.35
+        ):
             warnings.append("OVERFITTING")
         elif (
             best_val_loss is not None
@@ -338,6 +348,8 @@ def parse_training_report(
         "evaluation.loss_improvement_vs_baseline",
         allow_none=True,
     )
+    if loss_improvement is None and eval_loss is not None and baseline_loss is not None:
+        loss_improvement = baseline_loss - eval_loss
 
     num_classes: int | None = None
     accuracy: float | None = None
@@ -375,22 +387,24 @@ def parse_training_report(
             d = _as_dict(item, f"evaluation.per_class[{i}]")
             ci = _as_int(d.get("class_index"), f"evaluation.per_class[{i}].class_index")
             sup = _as_int(d.get("support"), f"evaluation.per_class[{i}].support")
-            freq = _as_float(d.get("actual_frequency", 0.0), f"evaluation.per_class[{i}].actual_frequency")
+            freq = _as_float(
+                d.get("actual_frequency"),
+                f"evaluation.per_class[{i}].actual_frequency",
+                allow_none=True,
+            )
             mprob = _as_float(
-                d.get("mean_predicted_prob", 0.0), f"evaluation.per_class[{i}].mean_predicted_prob"
+                d.get("mean_predicted_prob"),
+                f"evaluation.per_class[{i}].mean_predicted_prob",
+                allow_none=True,
             )
-            prec = _as_float(d.get("precision", 0.0), f"evaluation.per_class[{i}].precision")
-            rec = _as_float(d.get("recall", 0.0), f"evaluation.per_class[{i}].recall")
-            f1 = _as_float(d.get("f1", 0.0), f"evaluation.per_class[{i}].f1")
-            assert (
-                ci is not None
-                and sup is not None
-                and freq is not None
-                and mprob is not None
-                and prec is not None
-                and rec is not None
-                and f1 is not None
+            prec = _as_float(
+                d.get("precision"), f"evaluation.per_class[{i}].precision", allow_none=True
             )
+            rec = _as_float(
+                d.get("recall"), f"evaluation.per_class[{i}].recall", allow_none=True
+            )
+            f1 = _as_float(d.get("f1"), f"evaluation.per_class[{i}].f1", allow_none=True)
+            assert ci is not None and sup is not None
             per_class.append(
                 ClassMetricRow(
                     class_index=ci,
@@ -558,10 +572,18 @@ def format_report_detail(report: TrainingReportSummary) -> str:
             lines.append("    class   support   actual%   pred_prob%   prec     recall   f1")
             for row in report.per_class:
                 lbl = _class_label(row.class_index, report.num_classes)
+                act_str = _fmt_opt(row.actual_frequency * 100.0 if row.actual_frequency is not None else None, ".1f")
+                prob_str = _fmt_opt(
+                    row.mean_predicted_prob * 100.0 if row.mean_predicted_prob is not None else None, ".1f"
+                )
+                act_cell = f"{act_str}%" if act_str != "n/a" else "n/a"
+                prob_cell = f"{prob_str}%" if prob_str != "n/a" else "n/a"
                 lines.append(
-                    f"    {lbl:<7} {row.support:>7}   {row.actual_frequency*100:>6.1f}%   "
-                    f"{row.mean_predicted_prob*100:>9.1f}%   "
-                    f"{row.precision:>6.3f}   {row.recall:>6.3f}   {row.f1:>6.3f}"
+                    f"    {lbl:<7} {row.support:>7}   {act_cell:>7}   "
+                    f"{prob_cell:>10}   "
+                    f"{_fmt_opt(row.precision, '.3f'):>6}   "
+                    f"{_fmt_opt(row.recall, '.3f'):>6}   "
+                    f"{_fmt_opt(row.f1, '.3f'):>6}"
                 )
         if report.confusion_matrix:
             lines.append("  Confusion matrix (rows=true, cols=pred):")
@@ -589,7 +611,12 @@ def format_report_detail(report: TrainingReportSummary) -> str:
                     f"mean_R2={_fmt_opt(mean_r2, '+.4f')} | close_R2={_fmt_opt(close_r2, '+.4f')}"
                 )
 
-    status = "OK (beats constant baseline)" if not report.diagnostics else ", ".join(report.diagnostics)
+    if report.diagnostics:
+        status = ", ".join(report.diagnostics)
+    elif report.beats_baseline:
+        status = "OK (beats constant baseline)"
+    else:
+        status = "OK (baseline unavailable)"
     lines.append(f"  Diag:    {status}")
     return "\n".join(lines)
 

@@ -77,8 +77,9 @@ For `configs/assets/btc_1h.json` (`W = 24`, `H = 6`, `max_warmup = 199` due to `
 
 # 2) Export from real SQLite candles using configs/bot.json export.* and per-asset training.* defaults
 #    (add --update-asset-schema to update the asset's configured schema_path;
-#     override any v0.7.0 hyperparameter with --hidden, --candle-loss, --weight-decay, --dropout,
-#     --lr-schedule, --grad-clip, --early-stop-patience, --report-dir, etc.)
+#     override paths with --output-dir, --dataset-path-prefix "", --model-save-dir, --report-dir;
+#     override v0.7.0 hyperparameters with --hidden, --candle-loss, --weight-decay, --dropout,
+#     --lr-schedule, --grad-clip, --early-stop-patience, etc.)
 ./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --update-asset-schema
 
 # 3) Train and serve inside your C++17 NeuralNetwork (v0.7.0) repository:
@@ -89,7 +90,8 @@ For `configs/assets/btc_1h.json` (`W = 24`, `H = 6`, `max_warmup = 199` due to `
 ./build/release/apps/server_app configs/btc_1h_candles_nn_config.json
 ./build/release/apps/server_app configs/btc_1h_signal_nn_config.json
 
-# 4) Inspect a single training report or compare multiple runs objectively from TradingBot
+# 4) Inspect a single training report or compare multiple runs objectively from TradingBot (or any directory)
 ./scripts/analyze_reports.sh ../NeuralNetwork/reports/btc_1h_signal_report.json
 ./scripts/analyze_reports.sh ../NeuralNetwork/reports/ --task classification --detailed
+./scripts/analyze_reports.sh ../NeuralNetwork/reports/ --json
 ```

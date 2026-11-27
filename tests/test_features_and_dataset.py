@@ -328,6 +328,14 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 NNTrainingOptions(dropout_rate=1.0)
             with self.assertRaises(ValueError):
                 NNTrainingOptions(candle_loss="cce")
+            with self.assertRaises(ValueError):
+                NNTrainingOptions(hidden_activation="softmax")
+            with self.assertRaises(ValueError):
+                validate_nn_config_dict({"model": {}, "training": {}})  # missing server -> ValueError
+            bad_hidden_sm = copy.deepcopy(nn_cfg_s)
+            bad_hidden_sm["model"]["layers"][1]["activation"] = "softmax"
+            with self.assertRaises(ValueError):
+                validate_nn_config_dict(bad_hidden_sm)
             bad_cfg = copy.deepcopy(nn_cfg_s)
             bad_cfg["training"]["validation_split"] = 0.0
             with self.assertRaises(ValueError):
@@ -452,6 +460,8 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                         "0.3",
                         "--grad-clip",
                         "2.5",
+                        "--lr",
+                        "0.00005",
                         "--val-split",
                         "0.0",
                     ]
@@ -468,6 +478,9 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertAlmostEqual(ov_cfg["training"]["weight_decay"], 0.005)
             self.assertAlmostEqual(ov_cfg["training"]["dropout_rate"], 0.3)
             self.assertAlmostEqual(ov_cfg["training"]["grad_clip_norm"], 2.5)
+            # Inherited min_learning_rate (0.0001) clamps cleanly down to --lr (0.00005)
+            self.assertAlmostEqual(ov_cfg["training"]["learning_rate"], 0.00005)
+            self.assertAlmostEqual(ov_cfg["training"]["min_learning_rate"], 0.00005)
             # Inherited early_stopping_patience is cleanly disabled when --val-split 0.0 is passed
             self.assertEqual(ov_cfg["training"]["early_stopping_patience"], 0)
             self.assertFalse(ov_cfg["training"]["keep_best_validation_model"])

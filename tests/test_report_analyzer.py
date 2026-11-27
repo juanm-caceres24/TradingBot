@@ -245,12 +245,58 @@ class TestTrainingReportAnalyzer(unittest.TestCase):
         self.assertIn("NEGATIVE_R2", bad_reg.diagnostics)
         self.assertIn("DOES_NOT_BEAT_BASELINE", bad_reg.diagnostics)
 
-        # Nullable non-finite metric values parse cleanly without crashing
+        # Nullable non-finite metric values parse cleanly without crashing (regression + diverged classification)
         null_reg_raw = _regression_report_dict()
         null_reg_raw["evaluation"]["loss"] = None
         null_reg_raw["evaluation"]["r2"] = None
         null_reg = parse_training_report(null_reg_raw)
         self.assertIn("NON_FINITE_LOSS", null_reg.diagnostics)
+
+        diverged_cls_raw = _classification_report_dict()
+        diverged_cls_raw["evaluation"]["loss"] = None
+        diverged_cls_raw["evaluation"]["loss_improvement_vs_baseline"] = None
+        for row in diverged_cls_raw["evaluation"]["per_class"]:
+            row["mean_predicted_prob"] = None
+            row["precision"] = None
+            row["recall"] = None
+            row["f1"] = None
+        diverged_cls = parse_training_report(diverged_cls_raw, source_path="diverged.json")
+        self.assertIn("NON_FINITE_LOSS", diverged_cls.diagnostics)
+        self.assertIn("n/a", format_report_detail(diverged_cls))
+
+        # Literal NaN in non-nullable required field is rejected strictly
+        nan_lr_raw = _classification_report_dict()
+        nan_lr_raw["training"]["learning_rate"] = float("nan")
+        with self.assertRaises(ReportError):
+            parse_training_report(nan_lr_raw)
+
+        # Missing baseline reports "OK (baseline unavailable)" instead of claiming baseline beat
+        no_base_raw = _classification_report_dict()
+        no_base_raw["evaluation"]["baseline_constant_loss"] = None
+        no_base_raw["evaluation"]["loss_improvement_vs_baseline"] = None
+        no_base = parse_training_report(no_base_raw)
+        self.assertFalse(no_base.beats_baseline)
+        self.assertEqual(no_base.diagnostics, ())
+        self.assertIn("OK (baseline unavailable)", format_report_detail(no_base))
+
+        # Derives loss_improvement_vs_baseline when omitted if eval & baseline exist
+        derived_raw = _classification_report_dict(eval_loss=0.80, baseline_loss=1.00)
+        derived_raw["evaluation"]["loss_improvement_vs_baseline"] = None
+        derived = parse_training_report(derived_raw)
+        self.assertTrue(derived.beats_baseline)
+        self.assertAlmostEqual(derived.loss_improvement_vs_baseline or 0.0, 0.20)
+
+        # Both OVERFITTING diagnostic branches: (1) best_val >> final_train, (2) final_val >> best_val even when train_loss is None
+        ov1_raw = _classification_report_dict(eval_loss=0.80, baseline_loss=1.05)
+        ov1_raw["training"]["final_train_loss"] = 0.40
+        ov1_raw["training"]["best_val_loss"] = 0.80
+        self.assertIn("OVERFITTING", parse_training_report(ov1_raw).diagnostics)
+
+        ov2_raw = _classification_report_dict(eval_loss=0.80, baseline_loss=1.05)
+        ov2_raw["training"]["final_train_loss"] = None
+        ov2_raw["training"]["best_val_loss"] = 0.80
+        ov2_raw["training"]["final_val_loss"] = 1.00
+        self.assertIn("OVERFITTING", parse_training_report(ov2_raw).diagnostics)
 
         # Unsupported format_version rejected
         bad_ver = _classification_report_dict()
@@ -298,6 +344,33 @@ class TestTrainingReportAnalyzer(unittest.TestCase):
             self.assertEqual(rc3, 0)
             parsed_json = json.loads(buf3.getvalue())
             self.assertEqual([r["name"] for r in parsed_json], ["btc_1h_signal_v2.json", "btc_1h_signal_v1.json"])
+
+            # Directory containing a stray non-report JSON skips it with a stderr warning
+            stray_json = tmp_path / "nn_config.json"
+            stray_json.write_text(json.dumps({"model": {}, "training": {}}), encoding="utf-8")
+            buf_stray_out = io.StringIO()
+            buf_stray_err = io.StringIO()
+            with redirect_stdout(buf_stray_out), redirect_stderr(buf_stray_err):
+                rc_stray = app.main([str(tmp_path)])
+            self.assertEqual(rc_stray, 0)
+            self.assertIn("Warning: skipping non-report JSON", buf_stray_err.getvalue())
+            self.assertIn("btc_1h_signal_v2.json", buf_stray_out.getvalue())
+
+            # Explicitly passing a non-report JSON file still fails fast with exit code 1
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(app.main([str(stray_json)]), 1)
+
+            # Empty directory -> exit code 1; unmatched --task filter -> exit code 0
+            empty_dir = tmp_path / "empty_reports"
+            empty_dir.mkdir()
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(app.main([str(empty_dir)]), 1)
+
+            buf_unmatched = io.StringIO()
+            with redirect_stdout(buf_unmatched):
+                rc_unmatched = app.main([str(f_cls_good), "--task", "regression"])
+            self.assertEqual(rc_unmatched, 0)
+            self.assertIn("No reports matched filter", buf_unmatched.getvalue())
 
             # Error path: missing path returns exit code 1
             with redirect_stderr(io.StringIO()):

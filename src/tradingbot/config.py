@@ -38,7 +38,7 @@ _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
 _VALID_TB_MODES = frozenset({"pct", "atr_multiple"})
 _VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
-_VALID_NN_ACTIVATIONS = frozenset({"linear", "sigmoid", "tanh", "relu", "leaky_relu", "softmax"})
+_VALID_NN_HIDDEN_ACTIVATIONS = frozenset({"relu", "tanh", "sigmoid", "leaky_relu"})
 _VALID_NN_CANDLE_LOSSES = frozenset({"mse", "huber"})
 _VALID_NN_OPTIMIZERS = frozenset({"sgd", "adam"})
 _VALID_NN_LR_SCHEDULES = frozenset({"none", "cosine"})
@@ -1187,7 +1187,7 @@ def _parse_nn_training(raw: Any, section: str) -> NNTrainingConfig:
         hidden_activation=_expect_enum(
             obj.get("hidden_activation", "relu"),
             f"{section}.hidden_activation",
-            _VALID_NN_ACTIVATIONS,
+            _VALID_NN_HIDDEN_ACTIVATIONS,
         ),
         candle_loss=_expect_enum(
             obj.get("candle_loss", "mse"),
