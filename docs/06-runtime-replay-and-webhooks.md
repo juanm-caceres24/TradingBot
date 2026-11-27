@@ -9,6 +9,7 @@ This document describes the live multi-asset orchestrator (`BotOrchestrator`), t
 ```text
 BotOrchestrator (per-asset poll scheduler, thread-safe AssetRunner locks, SIGINT/SIGTERM stop)
        │
+       ├── AssetRunner("btc_15m", poll=5s) ──► SyncService / GapDetector ──► SQLiteCandleStore
        ├── AssetRunner("btc_1h", poll=5s)  ──► SyncService / GapDetector ──► SQLiteCandleStore
        ├── AssetRunner("btc_4h", poll=15s) ──► IndicatorEngine + PredictionEngine ──► server_app(s)
        └── AssetRunner("btc_1d", poll=30s) ──► AlertEvaluator ──► SQLite alerts + WebhookDispatcher

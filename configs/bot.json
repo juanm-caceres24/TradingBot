@@ -23,6 +23,9 @@
   },
   "assets": [
     {
+      "config_path": "assets/btc_15m.json"
+    },
+    {
       "config_path": "assets/btc_1h.json"
     },
     {
