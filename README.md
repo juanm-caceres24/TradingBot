@@ -2,14 +2,14 @@
 
 A modular, transparent, zero-hardcode **Python** multi-asset market data collector, technical indicator engine, dataset generator, neural-network prediction client, alert API, and 24/7 web dashboard designed to integrate seamlessly with the C++17 **`NeuralNetwork` (`libnn` v0.7.0)** training engine and HTTP inference server.
 
-## Features (`v0.8.0`)
+## Features (`v0.9.0`)
 
 - **Zero External Dependencies (Python 3.11+ Standard Library Only):** Runs out of the box on any Linux PC, 24/7 server, or Raspberry Pi with zero `pip install`, zero Node.js build tools, and zero external CDNs.
 - **Multi-Asset & Multi-Timeframe Architecture:** Manage independent logical assets (ships ready with `btc_1h`, `btc_4h`, and `btc_1d`, easily extensible to `nvda_1h`, `sp500_1d`, etc.) via strictly validated modular JSON files (`configs/bot.json`, `configs/assets/*.json`, `configs/providers/*.json`).
 - **Local SQLite Database & Automatic Gap Healing:** Clustered `WITHOUT ROWID` SQLite storage (`data/market.db`, WAL mode) with Monday-aligned `1w` support, head/internal/tail gap detection, unclosed-candle crash recovery, verified empty `sync_ranges`, prediction audit log, and cursor-based `alerts` table.
 - **Declarative REST & Deterministic Synthetic Providers:** JSON-driven `GenericRestProvider` (Binance Spot preset + generic REST/broker mapping with rate-limiting & retry backoff) and O(1) chunk-invariant `SyntheticProvider`.
 - **Extensible Indicator Engine, `NeuralNetwork` v0.7.0 Exporter & Report Analyzer:** Plugin registry (`SMA`, `EMA`, `RSI`, `ATR`, `BollingerBands`, LazyBear `SqueezeMomentum`), strict warm-up exclusion, window-relative normalization, percentage or volatility-adaptive ATR-multiple Triple Barrier labeling, `feature_schema.json` SHA-256 fingerprinting, `%.9g` CSV export, strictly valid `libnn` v0.7.0 `nn_config.json` generation (`Huber`/`MSE`/`CCE`, `AdamW` weight decay, dropout, Cosine LR, gradient clipping, early stopping, `report_path`), and `analyze_reports.sh` to diagnose and compare training JSON reports.
-- **Multi-Model `NeuralNetwork` Client, Trade Analysis & Alert Engine:** Consumes `server_app` (`/health`, `/info`, `/predict`), reconstructs translucent predicted OHLC candles, performs dual-model cross-confirmation, evaluates stateful alert rules (`consecutive_candles`, `cooldown_candles`), and dispatches outbound webhooks.
+- **Multi-Model `NeuralNetwork` Client, Trade Analysis, Replay & Alert Engine:** Consumes `server_app` (`/health`, `/info`, `/predict`), reconstructs translucent predicted OHLC candles, performs dual-model cross-confirmation with configurable `argmax` or `directional_edge` Softmax decision modes, evaluates filtered-signal & Triple-Barrier outcomes in historical `replay.sh`, evaluates stateful alert rules (`consecutive_candles`, `cooldown_candles`), and dispatches outbound webhooks.
 - **Embedded 24/7 Web Dashboard & External Alerts API:** Built-in HTTP/1.1 + native RFC 6455 WebSockets (`/ws/live`, `/ws/alerts`), responsive dark UI for LAN/Tailscale access, HiDPI Canvas financial charts (sliding window, volume, overlays, RSI, 4-color Squeeze Momentum, translucent predicted candles with TP/SL lines), watchlist, and cursor-based `/api/alerts` + `/ack` API for Telegram/WhatsApp/email bots.
 
 ## Quick Start

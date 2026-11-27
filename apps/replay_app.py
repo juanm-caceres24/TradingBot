@@ -181,6 +181,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"| directional_acc={dir_str} | horizon_MAE={mae_str} "
                     f"| alerts={summary.alerts_triggered}"
                 )
+                if summary.signal_trades_evaluated > 0:
+                    sig_acc_pct = (
+                        100.0 * summary.signal_directional_hits / summary.signal_trades_evaluated
+                    )
+                    avg_ret_str = (
+                        f"{summary.signal_avg_return_pct:+.4%}"
+                        if summary.signal_avg_return_pct is not None
+                        else "N/A"
+                    )
+                    tb_resolved = summary.tb_tp_hits + summary.tb_sl_hits
+                    tb_wr_str = (
+                        f"{100.0 * summary.tb_tp_hits / tb_resolved:.1f}%"
+                        if tb_resolved > 0
+                        else "N/A"
+                    )
+                    print(
+                        f"  filtered_signals={summary.signal_trades_evaluated} "
+                        f"| signal_acc={summary.signal_directional_hits}/{summary.signal_trades_evaluated} "
+                        f"({sig_acc_pct:.1f}%) "
+                        f"[LONG={summary.signal_long_hits}/{summary.signal_long_total}, "
+                        f"SHORT={summary.signal_short_hits}/{summary.signal_short_total}] "
+                        f"| avg_ret={avg_ret_str} "
+                        f"| TB(TP/SL/TO)={summary.tb_tp_hits}/{summary.tb_sl_hits}/{summary.tb_timeouts} "
+                        f"(win_rate={tb_wr_str})"
+                    )
+                else:
+                    print(
+                        "  filtered_signals=0 (no actionable LONG/SHORT trades with complete horizon)"
+                    )
                 for a in summary.alerts:
                     print(
                         f"    ALERT {a.action} @ {format_ms_to_iso(a.anchor_open_time_ms)} "
