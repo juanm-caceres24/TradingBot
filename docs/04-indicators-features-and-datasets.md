@@ -1,6 +1,6 @@
 # Indicators, Feature Normalization & `NeuralNetwork` Datasets (`v0.3.0`)
 
-This document describes the extensible indicator registry (`src/tradingbot/indicators/`), window-relative feature extraction (`src/tradingbot/features/`), and `NeuralNetwork` v0.6.0 dataset/config export (`src/tradingbot/dataset/`, `apps/export_dataset_app.py`).
+This document describes the extensible indicator registry (`src/tradingbot/indicators/`), window-relative feature extraction (`src/tradingbot/features/`), and `NeuralNetwork` v0.7.0 dataset/config export and training report analysis (`src/tradingbot/dataset/`, `apps/export_dataset_app.py`, `apps/analyze_reports_app.py`).
 
 ---
 
@@ -49,41 +49,49 @@ For `configs/assets/btc_1h.json` (`W = 24`, `H = 6`, `max_warmup = 199` due to `
 
 ---
 
-## 3. Target Encodings & `NeuralNetwork` v0.6.0 Parity
+## 3. Target Encodings & `NeuralNetwork` v0.7.0 Parity
 
 ### Model A — Candle Predictor (`kind = "candles"`)
 - **Output (`H × 4`):** relative `(open, high, low, close)` of future candles `t+1 .. t+H` normalized by `(C_t, S_t)`.
-- **`libnn` config:** `loss: "mse"`, output activation `"linear"`.
+- **`libnn` config:** `loss: "huber"` (default on shipped BTC profiles, with configurable `huber_delta`, preventing extreme flash-wick outliers from distorting predictions) or `"mse"`, output activation `"linear"`.
 
 ### Model B — Signal Classifier (`kind = "signal"`)
 - **Output (`3`):** one-hot `[HOLD, LONG, SHORT]` via conservative **Triple Barrier Labeling** over future bars `t+1 .. t+H` supporting both fixed-percentage (`mode: "pct"` with `take_profit_pct` / `stop_loss_pct`) and volatility-adaptive ATR-multiple barriers (`mode: "atr_multiple"` with `take_profit_atr` / `stop_loss_atr`, keeping class balance stationary across volatility regimes; if a bar touches both SL and TP simultaneously, that side is invalidated).
-- **`libnn` config:** `loss: "cce"`, output activation `"softmax"` (activates `libnn` v0.6.0's numerically stable fused `Softmax + CCE` backward path).
+- **`libnn` config:** `loss: "cce"`, output activation `"softmax"` (activates `libnn`'s numerically stable fused `Softmax + CCE` backward path).
 
-### Exact `NeuralNetwork` v0.6.0 Contract
+### Exact `NeuralNetwork` v0.7.0 Contract
 - CSV values are formatted with `%.9g` (exact 32-bit float round-trip matching `libnn::Dataset::save_csv()`).
-- Generated `nn_config.json` contains **zero unknown keys**, enforces **`validation_shuffle: false`** (strictly chronological split preventing future data leakage), enables **`keep_best_validation_model: true`**, and pre-populates `server.host` and `server.port` from the asset configuration.
-- Root `configs/bot.json` includes an optional `"export"` block (`output_dir`, `dataset_path_prefix`, `model_save_dir`) so exported `nn_config.json` files automatically emit `NeuralNetwork`-ready relative paths (e.g. `"data/<file>.csv"` and `"models/<asset>_<kind>.json"`) without needing CLI flags on every run (set `"dataset_path_prefix": ""` to emit absolute local CSV paths instead).
+- Generated `nn_config.json` contains **zero unknown keys**, enforces **`validation_shuffle: false`** (strictly chronological split preventing future data leakage), enables **`keep_best_validation_model: true`** (whenever `validation_split > 0`), pre-populates `server.host` and `server.port` from the asset configuration, and emits all `libnn` v0.7.0 regularization & reporting controls:
+  - `huber_delta`, `weight_decay` (decoupled L2 / `AdamW` excluding biases), `dropout_rate` (stateless deterministic hidden-layer inverted dropout), `lr_schedule` (`"none" | "cosine"`) + `min_learning_rate`, `grad_clip_norm`, `early_stopping_patience` + `early_stopping_min_delta`, and `report_path`.
+- Per-asset optional `"training"` blocks in `configs/assets/*.json` store calibrated architecture and regularization defaults per timeframe (e.g. `[64, 32]` for `btc_1h`/`btc_4h`, `[32, 16]` + smaller batch size & stronger dropout/weight decay for `btc_1d`), all overridable via CLI flags in `export_dataset_app.py`.
+- Root `configs/bot.json` includes an optional `"export"` block (`output_dir`, `dataset_path_prefix`, `model_save_dir`, `report_dir`) so exported `nn_config.json` files automatically emit `NeuralNetwork`-ready relative paths (e.g. `"data/<file>.csv"`, `"models/<asset>_<kind>.json"`, and `"reports/<asset>_<kind>_report.json"`) without needing CLI flags on every run (set `"dataset_path_prefix": ""` for absolute CSV paths or `"report_dir": ""` to omit automatic report export).
 - `feature_schema.json` stores a SHA-256 `feature_hash` so live inference (`v0.4.0+`) verifies that the loaded model and active indicator configuration match.
 
 ---
 
-## 4. CLI Usage (`apps/export_dataset_app.py` / `scripts/export_dataset.sh`)
+## 4. CLI Usage (`export_dataset.sh` & `analyze_reports.sh`)
 
 ```bash
-# 1) Generate an offline synthetic test dataset + nn_config.json (2000 bars, zero API needed)
+# 1) Generate an offline synthetic test dataset + v0.7.0 nn_config.json (2000 bars, zero API needed)
 ./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --synthetic-candles 2000
 
-# 2) Export from real SQLite candles stored by backfill_app using export.* defaults in configs/bot.json
+# 2) Export from real SQLite candles using configs/bot.json export.* and per-asset training.* defaults
 #    (add --update-asset-schema to update the asset's configured schema_path;
-#     override paths optionally with --output-dir, --dataset-path-prefix, --model-save-dir)
+#     override paths with --output-dir, --dataset-path-prefix "", --model-save-dir, --report-dir;
+#     override v0.7.0 hyperparameters with --hidden, --candle-loss, --weight-decay, --dropout,
+#     --lr-schedule, --grad-clip, --early-stop-patience, etc.)
 ./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --update-asset-schema
 
-# 3) Train and serve inside your C++17 NeuralNetwork repository:
-#    - With configs/bot.json default export.dataset_path_prefix="data", copy CSVs to NeuralNetwork/data/
-#      and *_nn_config.json to NeuralNetwork/configs/ (or export with --dataset-path-prefix "" to embed absolute CSV paths)
-#    - Use --compact for multiclass signal models
+# 3) Train and serve inside your C++17 NeuralNetwork (v0.7.0) repository:
+#    - Copy CSVs to NeuralNetwork/data/ and *_nn_config.json to NeuralNetwork/configs/
+#    - train_app automatically writes JSON evaluation reports to training.report_path (e.g. reports/*.json)
 ./build/release/apps/train_app configs/btc_1h_candles_nn_config.json
 ./build/release/apps/train_app configs/btc_1h_signal_nn_config.json --compact
 ./build/release/apps/server_app configs/btc_1h_candles_nn_config.json
 ./build/release/apps/server_app configs/btc_1h_signal_nn_config.json
+
+# 4) Inspect a single training report or compare multiple runs objectively from TradingBot (or any directory)
+./scripts/analyze_reports.sh ../NeuralNetwork/reports/btc_1h_signal_report.json
+./scripts/analyze_reports.sh ../NeuralNetwork/reports/ --task classification --detailed
+./scripts/analyze_reports.sh ../NeuralNetwork/reports/ --json
 ```

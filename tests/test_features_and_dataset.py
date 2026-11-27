@@ -233,23 +233,24 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
 
 
 class TestDatasetExporterAndNNConfig(unittest.TestCase):
-    def test_export_candles_and_signal_libnn_v060_parity(self) -> None:
+    def test_export_candles_and_signal_libnn_v070_parity(self) -> None:
         asset = load_asset_config(BTC_1H_ASSET_PATH)
         bars = _make_synthetic_bars(292)
 
         with tempfile.TemporaryDirectory() as tmp:
-            # 1) Candle Predictor export
+            # 1) Candle Predictor export using calibrated asset.training defaults (libnn v0.7.0)
             sum_c = export_dataset(
                 asset,
                 bars,
                 model_kind="candles",
                 output_dir=tmp,
-                training_options=NNTrainingOptions(hidden_layers=(64, 32), epochs=50),
+                report_dir="reports",
             )
             # Total=292, first_anchor = 199 + 24 - 1 = 222, last_anchor_excl = 292 - 6 = 286 -> 64 samples
             self.assertEqual(sum_c.samples_written, 64)
             self.assertEqual(sum_c.input_size, 264)
             self.assertEqual(sum_c.output_size, 24)
+            self.assertEqual(sum_c.report_path, "reports/btc_1h_candles_report.json")
 
             lines = sum_c.csv_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 1 + 64)  # header + 64 rows
@@ -265,12 +266,36 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
 
             nn_cfg_c = json.loads(sum_c.nn_config_path.read_text(encoding="utf-8"))
             validate_nn_config_dict(nn_cfg_c)
-            self.assertEqual(nn_cfg_c["training"]["loss"], "mse")
+            self.assertEqual(nn_cfg_c["training"]["loss"], "huber")
+            self.assertAlmostEqual(nn_cfg_c["training"]["huber_delta"], 1.0)
+            self.assertAlmostEqual(nn_cfg_c["training"]["weight_decay"], 0.001)
+            self.assertAlmostEqual(nn_cfg_c["training"]["dropout_rate"], 0.2)
+            self.assertEqual(nn_cfg_c["training"]["lr_schedule"], "cosine")
+            self.assertAlmostEqual(nn_cfg_c["training"]["min_learning_rate"], 0.0001)
+            self.assertAlmostEqual(nn_cfg_c["training"]["grad_clip_norm"], 1.0)
+            self.assertEqual(nn_cfg_c["training"]["early_stopping_patience"], 25)
+            self.assertAlmostEqual(nn_cfg_c["training"]["early_stopping_min_delta"], 0.0001)
+            self.assertEqual(nn_cfg_c["training"]["report_path"], "reports/btc_1h_candles_report.json")
             self.assertFalse(nn_cfg_c["training"]["validation_shuffle"])
             self.assertTrue(nn_cfg_c["training"]["keep_best_validation_model"])
             self.assertEqual(nn_cfg_c["model"]["layers"][0], {"size": 264})
+            self.assertEqual(nn_cfg_c["model"]["layers"][1], {"size": 64, "activation": "leaky_relu"})
             self.assertEqual(nn_cfg_c["model"]["layers"][-1], {"size": 24, "activation": "linear"})
             self.assertEqual(nn_cfg_c["server"]["port"], 8080)
+
+            # Explicit NNTrainingOptions override (e.g. classic MSE with no regularization)
+            sum_mse = export_dataset(
+                asset,
+                bars,
+                model_kind="candles",
+                output_dir=tmp,
+                training_options=NNTrainingOptions(hidden_layers=(64, 32), candle_loss="mse", epochs=50),
+            )
+            nn_cfg_mse = json.loads(sum_mse.nn_config_path.read_text(encoding="utf-8"))
+            validate_nn_config_dict(nn_cfg_mse)
+            self.assertEqual(nn_cfg_mse["training"]["loss"], "mse")
+            self.assertEqual(nn_cfg_mse["training"]["epochs"], 50)
+            self.assertEqual(nn_cfg_mse["training"]["report_path"], "")
 
             # 2) Signal Classifier export (with ATR-multiple triple barrier schema round-trip)
             sum_s = export_dataset(
@@ -278,6 +303,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 bars,
                 model_kind="signal",
                 output_dir=tmp,
+                report_dir="reports",
             )
             self.assertEqual(sum_s.samples_written, 64)
             loaded_sig_schema = load_feature_schema(sum_s.schema_path)
@@ -289,8 +315,31 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             nn_cfg_s = json.loads(sum_s.nn_config_path.read_text(encoding="utf-8"))
             validate_nn_config_dict(nn_cfg_s)
             self.assertEqual(nn_cfg_s["training"]["loss"], "cce")
+            self.assertEqual(nn_cfg_s["training"]["report_path"], "reports/btc_1h_signal_report.json")
             self.assertEqual(nn_cfg_s["model"]["layers"][-1], {"size": 3, "activation": "softmax"})
             self.assertEqual(nn_cfg_s["server"]["port"], 8081)
+
+            # 3) Strict libnn v0.7.0 option and validator guards
+            with self.assertRaises(ValueError):
+                NNTrainingOptions(early_stopping_patience=5, validation_split=0.0)
+            with self.assertRaises(ValueError):
+                NNTrainingOptions(learning_rate=0.001, min_learning_rate=0.01)
+            with self.assertRaises(ValueError):
+                NNTrainingOptions(dropout_rate=1.0)
+            with self.assertRaises(ValueError):
+                NNTrainingOptions(candle_loss="cce")
+            with self.assertRaises(ValueError):
+                NNTrainingOptions(hidden_activation="softmax")
+            with self.assertRaises(ValueError):
+                validate_nn_config_dict({"model": {}, "training": {}})  # missing server -> ValueError
+            bad_hidden_sm = copy.deepcopy(nn_cfg_s)
+            bad_hidden_sm["model"]["layers"][1]["activation"] = "softmax"
+            with self.assertRaises(ValueError):
+                validate_nn_config_dict(bad_hidden_sm)
+            bad_cfg = copy.deepcopy(nn_cfg_s)
+            bad_cfg["training"]["validation_split"] = 0.0
+            with self.assertRaises(ValueError):
+                validate_nn_config_dict(bad_cfg)
 
     def test_export_dataset_app_cli_synthetic_and_sqlite(self) -> None:
         export_app = _load_export_app_module()
@@ -325,10 +374,14 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertIn("[signal] samples=54", output_text)
             self.assertTrue((out_syn / "btc_1h_candles_nn_config.json").is_file())
             self.assertTrue((out_syn / "btc_1h_signal_nn_config.json").is_file())
-            # Root configs/bot.json configures export.dataset_path_prefix="data" and model_save_dir="models"
+            # Root configs/bot.json configures export.dataset_path_prefix="data", model_save_dir="models", report_dir="reports"
             syn_nn_cfg = json.loads((out_syn / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
             self.assertEqual(syn_nn_cfg["training"]["dataset_path"], "data/btc_1h_candles_24to6.csv")
             self.assertEqual(syn_nn_cfg["model"]["save_path"], "models/btc_1h_candles.json")
+            self.assertEqual(syn_nn_cfg["training"]["report_path"], "reports/btc_1h_candles_report.json")
+            self.assertEqual(syn_nn_cfg["training"]["loss"], "huber")
+            self.assertAlmostEqual(syn_nn_cfg["training"]["weight_decay"], 0.001)
+            self.assertAlmostEqual(syn_nn_cfg["training"]["dropout_rate"], 0.2)
 
             # Mode 2: export from local SQLite database
             db_path = tmp_path / "market.db"
@@ -378,7 +431,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 str((out_db / "btc_1h_candles_24to6.csv").resolve()),
             )
 
-            # CLI overrides: --dataset-path-prefix "" forces absolute CSV path; --model-save-dir overrides models dir
+            # CLI overrides: --dataset-path-prefix "", --model-save-dir, --report-dir "", and v0.7.0 training overrides
             out_override = tmp_path / "override_exports"
             buf3 = io.StringIO()
             with redirect_stdout(buf3):
@@ -397,6 +450,20 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                         "",
                         "--model-save-dir",
                         "custom_models",
+                        "--report-dir",
+                        "",
+                        "--candle-loss",
+                        "mse",
+                        "--weight-decay",
+                        "0.005",
+                        "--dropout",
+                        "0.3",
+                        "--grad-clip",
+                        "2.5",
+                        "--lr",
+                        "0.00005",
+                        "--val-split",
+                        "0.0",
                     ]
                 )
             self.assertEqual(rc3, 0)
@@ -406,6 +473,17 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 str((out_override / "btc_1h_candles_24to6.csv").resolve()),
             )
             self.assertEqual(ov_cfg["model"]["save_path"], "custom_models/btc_1h_candles.json")
+            self.assertEqual(ov_cfg["training"]["report_path"], "")
+            self.assertEqual(ov_cfg["training"]["loss"], "mse")
+            self.assertAlmostEqual(ov_cfg["training"]["weight_decay"], 0.005)
+            self.assertAlmostEqual(ov_cfg["training"]["dropout_rate"], 0.3)
+            self.assertAlmostEqual(ov_cfg["training"]["grad_clip_norm"], 2.5)
+            # Inherited min_learning_rate (0.0001) clamps cleanly down to --lr (0.00005)
+            self.assertAlmostEqual(ov_cfg["training"]["learning_rate"], 0.00005)
+            self.assertAlmostEqual(ov_cfg["training"]["min_learning_rate"], 0.00005)
+            # Inherited early_stopping_patience is cleanly disabled when --val-split 0.0 is passed
+            self.assertEqual(ov_cfg["training"]["early_stopping_patience"], 0)
+            self.assertFalse(ov_cfg["training"]["keep_best_validation_model"])
 
             # CLI validation errors
             with redirect_stderr(io.StringIO()):
@@ -432,6 +510,26 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 self.assertEqual(
                     export_app.main([str(bot_cfg_path), "--dataset-path-prefix", "/"]),
                     2,
+                )
+                self.assertEqual(
+                    export_app.main([str(bot_cfg_path), "--report-dir", "/"]),
+                    2,
+                )
+                self.assertEqual(
+                    export_app.main(
+                        [
+                            str(BOT_CONFIG_PATH),
+                            "--asset",
+                            "btc_1h",
+                            "--synthetic-candles",
+                            "240",
+                            "--val-split",
+                            "0.0",
+                            "--early-stop-patience",
+                            "10",
+                        ]
+                    ),
+                    1,
                 )
 
 

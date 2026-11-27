@@ -6,7 +6,7 @@ This document is the single source of truth for the requirements, architectural 
 
 ## 1. Vision & Objectives
 
-Build a **modular, transparent, 24/7 multi-asset quantitative market data, indicator, neural-network prediction, and alerting platform** in modern **Python (3.11+)** that integrates cleanly with the companion C++17 **`NeuralNetwork` (`libnn` v0.6.0)** project.
+Build a **modular, transparent, 24/7 multi-asset quantitative market data, indicator, neural-network prediction, and alerting platform** in modern **Python (3.11+)** that integrates cleanly with the companion C++17 **`NeuralNetwork` (`libnn` v0.7.0)** project.
 
 Core guiding principles (mirrored directly from `NeuralNetwork`):
 - **Full transparency & control:** Every candle, indicator formula, feature normalization transform, gap-fill request, alert evaluation, and neural-network payload is directly implemented and inspectable.
@@ -32,7 +32,7 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 - Each asset lives in its own modular JSON file under `configs/assets/` (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
   - Its market (`symbol`, `timeframe`, `market_schedule`: `"24/7"` enforces strict `interval_ms` contiguity in sliding windows, replay horizon checks, and consecutive alert streaks; `"sessions"` allows weekend/holiday timestamp gaps cleanly).
   - Its data provider preset (e.g., `binance_spot` for crypto, another REST preset for equities/indices, or `synthetic` for offline tests).
-  - Its runtime mode, indicator list, feature window/normalization, Triple Barrier targets, dedicated/shared/disabled neural-network endpoints, analysis thresholds, and alert rules.
+  - Its runtime mode, indicator list, feature window/normalization, Triple Barrier targets, dedicated/shared/disabled neural-network endpoints, optional `training` defaults, analysis thresholds, and alert rules.
 - Adding a new asset or timeframe requires **zero code changes**: add a JSON file in `configs/assets/` and register it in `configs/bot.json`.
 
 ### 3.2 Configurable Market Data Ingestion
@@ -60,17 +60,18 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
   - Early historical candles lacking complete indicator values **are displayed in the Web UI** (with indicator series starting once sufficient candles exist).
   - Incomplete candles/windows with missing (`None`/`NaN`) indicator values are **strictly excluded** from training CSV datasets and live neural-network inference requests.
 
-### 3.5 Feature Normalization, Dataset Export & `NeuralNetwork` v0.6.0 Integration
+### 3.5 Feature Normalization, Dataset Export & `NeuralNetwork` v0.7.0 Integration
 - **Window-relative normalization:** Never feed raw non-stationary prices to the MLP. Every input window of $W$ candles (e.g., $W = 24$) is normalized relative to the anchor candle close $C_t$ and local volatility (`ATR` or percentage returns), with bounded indicator scaling.
 - **Sliding-window dataset generation:** Given $W$ input candles (indices `i .. i + W - 1`, e.g., `0..23` = 24 candles) and $H$ target candles (`i + W .. i + W + H - 1`, e.g., `24..29` = 6 candles for `btc_1h`/`btc_4h`, or `H = 7` for `btc_1d`), slide forward by configurable `stride` starting strictly after `max_warmup`.
-- **Per-asset modular multi-network architecture** aligned strictly with `libnn` v0.6.0 constraints (one loss + one output activation per `Network`):
-  1. **Candle Predictor (`MSE` + `Linear`):** Input = $W$ normalized candles + indicators; Output = $H \times 4$ relative OHLC values used to reconstruct translucent predicted candles and projected TP/SL zones.
-  2. **Signal Classifier (`CCE` + `Softmax`, parallel, enabled by default on `btc_1h`/`btc_4h`/`btc_1d`):** Input = identical normalized feature vector; Output = 3 mutually exclusive probabilities `[HOLD, LONG, SHORT]` trained via Triple Barrier Labeling (`mode: "pct"` or volatility-adaptive `mode: "atr_multiple"`) over the next $H$ candles (leveraging `libnn` v0.6.0's numerically stable fused `Softmax + CCE` backward path).
+- **Per-asset modular multi-network architecture** aligned strictly with `libnn` v0.7.0 constraints (one loss + one output activation per `Network`):
+  1. **Candle Predictor (`Huber` or `MSE` + `Linear`):** Input = $W$ normalized candles + indicators; Output = $H \times 4$ relative OHLC values used to reconstruct translucent predicted candles and projected TP/SL zones (`Huber` loss prevents extreme flash-wick outliers from distorting regression scales).
+  2. **Signal Classifier (`CCE` + `Softmax`, parallel, enabled by default on `btc_1h`/`btc_4h`/`btc_1d`):** Input = identical normalized feature vector; Output = 3 mutually exclusive probabilities `[HOLD, LONG, SHORT]` trained via Triple Barrier Labeling (`mode: "pct"` or volatility-adaptive `mode: "atr_multiple"`) over the next $H$ candles (leveraging `libnn`'s numerically stable fused `Softmax + CCE` backward path).
   3. **Extensible `extra_models` map:** Supports plugging additional specialized `server_app` models per asset via JSON; `PredictionEngine` and `ReplayEngine` query enabled extra models and expose their raw output vectors in `PredictionSnapshot.extra_outputs` and JSON API responses while `candle_predictor` and `signal_classifier` drive `TradeAnalysis`.
-  - Because each logical asset (`btc_1h`, `btc_4h`, `btc_1d`, `nvda_1h`) configures its own endpoints independently, an asset can run dedicated trained models on its own ports, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., for charting-only assets).
-- **Exact `NeuralNetwork` v0.6.0 interoperability:**
+  - Because each logical asset (`btc_1h`, `btc_4h`, `btc_1d`, `nvda_1h`) configures its own endpoints and optional `training` defaults independently, an asset can run dedicated trained models on its own ports, tune its own architecture/regularization, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., for charting-only assets).
+- **Exact `NeuralNetwork` v0.7.0 interoperability:**
   - Export `libnn`-compatible CSV files per asset (`input_cols + target_cols` numeric columns formatted with `%.9g`).
-  - Auto-generate strictly valid `nn_config.json` files per asset/model (exact `input_size`, `output_size`, `Adam`, `validation_split`, **`validation_shuffle: false`** chronological split, **`keep_best_validation_model: true`**, pre-populated with the asset's configured `server.host` and `server.port`, and configurable `export.{output_dir, dataset_path_prefix, model_save_dir}` paths in `configs/bot.json` — zero unknown keys).
+  - Auto-generate strictly valid `libnn` v0.7.0 `nn_config.json` files per asset/model from optional per-asset `training` defaults and CLI overrides: exact `input_size`/`output_size`, `Huber` (`huber_delta`) or `MSE`/`CCE`, `AdamW` decoupled `weight_decay`, deterministic hidden `dropout_rate`, `Cosine` LR schedule (`min_learning_rate`), global L2 `grad_clip_norm`, **`validation_shuffle: false`** chronological split, **`keep_best_validation_model: true`**, `early_stopping_patience` + `early_stopping_min_delta`, automatic `report_path` (from `export.report_dir`), pre-populated `server.host`/`server.port`, and configurable `export.{output_dir, dataset_path_prefix, model_save_dir, report_dir}` paths in `configs/bot.json` — zero unknown keys.
+  - Consume and objectively compare `train_app` v0.7.0 JSON evaluation reports (`apps/analyze_reports_app.py` / `scripts/analyze_reports.sh`) to diagnose baseline beat, class collapse, probability miscalibration, negative $R^2$, and overfitting before live/replay deployment.
   - Save companion `feature_schema.json` files capturing indicator list, feature order, window/horizon sizes, and normalization parameters.
   - Connect to each enabled `server_app` via HTTP/1.1 + JSON (`GET /health`, `GET /info`, `POST /predict`), verifying `input_size` and `output_size` against `feature_schema.json` on startup.
 
@@ -129,7 +130,7 @@ All modes are configurable per asset in JSON and overridable via CLI (targeting 
 - Mirroring `NeuralNetwork/include/nn/config.hpp`, `tradingbot.config` validates every JSON section strictly:
   - Unknown keys raise `ConfigError` immediately (no silent typos).
   - Booleans are never silently accepted where integers or floats are expected.
-  - Root `configs/bot.json` configures `storage`, optional `export` (`output_dir`, `dataset_path_prefix`, `model_save_dir`), `web`, `notifications`, and per-asset references (`config_path`), while each asset references provider presets (`preset_path`), both supporting strictly validated inline overrides.
+  - Root `configs/bot.json` configures `storage`, optional `export` (`output_dir`, `dataset_path_prefix`, `model_save_dir`, `report_dir`), `web`, `notifications`, and per-asset references (`config_path`), while each asset references provider presets (`preset_path`), both supporting strictly validated inline overrides.
 
 ---
 
@@ -153,6 +154,7 @@ TradingBot/
 │   ├── test.sh
 │   ├── backfill.sh
 │   ├── export_dataset.sh
+│   ├── analyze_reports.sh
 │   ├── live.sh
 │   └── replay.sh
 ├── configs/                             # External JSON configs (zero hardcoding)
@@ -172,7 +174,7 @@ TradingBot/
 │   ├── providers/                       # GenericRestProvider, SyntheticProvider, SyncService (backfill/sync)
 │   ├── indicators/                      # Registry + SMA, EMA, RSI, ATR, BB, SqueezeMomentum
 │   ├── features/                        # Normalization, window builder, FeatureSchema
-│   ├── dataset/                         # libnn v0.6.0 CSV exporter & nn_config.json generator
+│   ├── dataset/                         # libnn v0.7.0 CSV exporter, nn_config.json generator & report analyzer
 │   ├── nn_client/                       # Multi-model HTTP client for server_app
 │   ├── analysis/                        # Candle reconstruction, TradeAnalyzer, PredictionEngine, AlertEvaluator
 │   ├── runtime/                         # Multi-asset BotOrchestrator (sync_live, live_only), ReplayEngine, EventBus, webhooks
@@ -180,6 +182,7 @@ TradingBot/
 ├── apps/                                # Thin CLI entrypoints
 │   ├── backfill_app.py
 │   ├── export_dataset_app.py
+│   ├── analyze_reports_app.py
 │   ├── live_app.py
 │   └── replay_app.py
 ├── tests/                               # Unit & integration test suite (unittest)
@@ -205,3 +208,4 @@ TradingBot/
 | **`v0.6.4`** | Completed | Removed unused `btc_1w` asset profile from shipped defaults (retaining active `btc_1h`, `btc_4h`, and `btc_1d` profiles and generic Monday-aligned `1w` timeframe support) and synchronized tests and documentation across `docs/` and `README.md`. | Clean `81/81` test suite with zero stale `btc_1w`/port references, `pyproject.toml`/`__init__.py` version parity, and JS syntax check (`./scripts/test.sh` + `node --check`). |
 | **`v0.6.5`** | Completed | Added optional root `export` config block (`output_dir`, `dataset_path_prefix`, `model_save_dir`) with CLI overrides (`--output-dir`, `--dataset-path-prefix`, `--model-save-dir`) for direct `NeuralNetwork` relative dataset/model paths, and compacted `btc_4h` (`8082/8083`) and `btc_1d` (`8084/8085`) NN ports. | Strict `export` config validation, relative/absolute `nn_config.json` path assertions, compacted port verification, and full `81/81` test suite (`./scripts/test.sh`). |
 | **`v0.7.0`** | Completed | Added volatility-adaptive ATR-multiple Triple Barrier labeling (`mode: "atr_multiple"`) across config, `FeaturePipeline`, `FeatureSchema`, `TradeAnalyzer`, and `ReplayEngine` (with positive TP/SL price floor), fixed RFC 6455 WebSocket magic GUID (`47DA`), hardened `export` path validation and `NeuralNetwork` train/serve hints, and recalibrated `btc_1h`, `btc_4h`, and `btc_1d` profiles (`ema_20`/`ema_55`/`sma_200`, `W=24`, dual models enabled). | Official RFC 6455 Section 1.3 WebSocket handshake vector test, ATR-multiple / extreme-ATR / sub-cent `TradeAnalyzer` tests, strict export path validation, and full `82/82` test suite (`./scripts/test.sh` + `node --check`). |
+| **`v0.8.0`** | Completed | Full `NeuralNetwork` (`libnn` `v0.7.0`) integration: optional per-asset `training` defaults (`Huber`/`MSE`, `AdamW` decoupled `weight_decay`, deterministic `dropout_rate`, `Cosine` LR schedule, global L2 `grad_clip_norm`, early stopping), root `export.report_dir`, CLI hyperparameter overrides, calibrated `btc_1h`/`btc_4h`/`btc_1d` training profiles, and zero-dependency JSON training report analyzer/comparator (`report_analyzer.py`, `apps/analyze_reports_app.py`, `scripts/analyze_reports.sh`). | Strict `libnn` v0.7.0 schema & value validation, hidden-activation/early-stop/LR-clamp guards, diverged/nullable/overfitting report diagnostics, directory-scan CLI tests, and full `84/84` test suite (`./scripts/test.sh` + `node --check`). |
