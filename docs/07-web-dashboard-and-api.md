@@ -6,7 +6,7 @@ This document describes the embedded 24/7 Web Dashboard (`src/tradingbot/web/`),
 
 ## 1. Zero-Dependency Architecture
 
-Mirroring `NeuralNetwork`'s POSIX socket inference server, the entire TradingBot stack (`v0.1.0` through `v0.9.0`) runs using **Python's standard library only** — zero `pip install`, zero Node.js/npm build steps, and zero external CDNs:
+Mirroring `NeuralNetwork`'s POSIX socket inference server, the entire TradingBot stack (`v0.1.0` through `v0.10.0`) runs using **Python's standard library only** — zero `pip install`, zero Node.js/npm build steps, and zero external CDNs:
 
 ```text
 Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp / Email)
