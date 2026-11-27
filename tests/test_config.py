@@ -39,8 +39,46 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(cfg.export.report_dir, "reports")
         self.assertEqual(cfg.web.visible_candles, 70)
         self.assertTrue(cfg.notifications.api_enabled)
-        self.assertEqual(len(cfg.assets), 3)
-        self.assertEqual(len(cfg.enabled_assets), 3)
+        self.assertEqual(len(cfg.assets), 4)
+        self.assertEqual(len(cfg.enabled_assets), 4)
+
+        btc_15m = cfg.get_asset("btc_15m")
+        self.assertTrue(btc_15m.enabled)
+        self.assertEqual(btc_15m.market.symbol, "BTCUSDT")
+        self.assertEqual(btc_15m.market.timeframe, "15m")
+        self.assertEqual(btc_15m.provider.name, "binance_spot")
+        self.assertEqual(btc_15m.features.input_window, 24)
+        self.assertEqual(btc_15m.features.forecast_horizon, 6)
+        self.assertEqual(btc_15m.features.stride, 2)
+        self.assertEqual(btc_15m.features.triple_barrier.mode, "atr_multiple")
+        self.assertEqual(btc_15m.features.triple_barrier.take_profit_atr, 1.5)
+        self.assertEqual(btc_15m.features.triple_barrier.stop_loss_atr, 1.0)
+        self.assertTrue(btc_15m.neural_networks.signal_classifier.enabled)
+        self.assertEqual(btc_15m.neural_networks.candle_predictor.port, 8086)
+        self.assertEqual(btc_15m.neural_networks.signal_classifier.port, 8087)
+        self.assertEqual(btc_15m.analysis.signal_decision_mode, "directional_edge")
+        self.assertEqual(btc_15m.analysis.tp_sl_source, "triple_barrier")
+        self.assertFalse(btc_15m.analysis.require_candle_confirmation)
+        self.assertAlmostEqual(btc_15m.analysis.min_directional_prob, 0.40)
+        self.assertAlmostEqual(btc_15m.analysis.min_directional_ratio, 1.8)
+        self.assertAlmostEqual(btc_15m.analysis.min_expected_move_pct, 0.002)
+        self.assertEqual(btc_15m.alerts.consecutive_candles, 2)
+        self.assertEqual(btc_15m.alerts.cooldown_candles, 6)
+        self.assertEqual(btc_15m.training.hidden_layers, (64, 32))
+        self.assertEqual(btc_15m.training.batch_size, 128)
+        self.assertAlmostEqual(btc_15m.training.learning_rate, 0.0005)
+        self.assertAlmostEqual(btc_15m.training.min_learning_rate, 0.00005)
+        self.assertAlmostEqual(btc_15m.training.weight_decay, 0.008)
+        self.assertAlmostEqual(btc_15m.training.dropout_rate, 0.25)
+        self.assertEqual(btc_15m.training.early_stopping_patience, 18)
+
+        from tradingbot.features import FeaturePipeline
+
+        btc_15m_pipe = FeaturePipeline(btc_15m)
+        self.assertEqual(btc_15m_pipe.max_warmup, 199)
+        self.assertEqual(btc_15m_pipe.build_schema("candles").input_size, 384)
+        self.assertEqual(btc_15m_pipe.build_schema("candles").output_size, 24)
+        self.assertEqual(btc_15m_pipe.build_schema("signal").output_size, 3)
 
         btc_1h = cfg.get_asset("btc_1h")
         self.assertTrue(btc_1h.enabled)
@@ -123,10 +161,10 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
 
         # Verify inline override in bot.json can disable an asset
         raw_override = copy.deepcopy(self.bot_raw)
-        raw_override["assets"][2]["enabled"] = False
+        raw_override["assets"][-1]["enabled"] = False
         cfg_override = parse_config_dict(raw_override, base_dir=self.bot_dir)
         self.assertFalse(cfg_override.get_asset("btc_1d").enabled)
-        self.assertEqual(len(cfg_override.enabled_assets), 2)
+        self.assertEqual(len(cfg_override.enabled_assets), 3)
 
         # Verify all configured NN server ports across assets are distinct (zero collisions)
         all_ports = [

@@ -47,7 +47,7 @@ Raw prices are non-stationary across years and assets and are never fed directly
   - `bounded`: passed through directly (e.g., `squeeze_state ∈ {-1, 0, +1}`)
 
 For `configs/assets/btc_1h.json` (`W = 24`, `H = 6`, `max_warmup = 199` due to `sma_200` → `223` minimum candles for inference, 5 base features + 11 indicator outputs from `ema_20`, `ema_55`, `sma_200`, `rsi_14`, `squeeze_20`, `vol_regime`, and strictly causal `htf_4h` = 16 per bar):
-`input_size = 24 × 16 = 384` (`btc_4h` uses `24 → 6` with `htf_1d`; `btc_1d` uses `24 → 7` with `htf_1w`).
+`input_size = 24 × 16 = 384` (`btc_15m` uses `24 → 6`, `stride: 2`, with `htf_1h`; `btc_4h` uses `24 → 6` with `htf_1d`; `btc_1d` uses `24 → 7` with `htf_1w`).
 
 ---
 
@@ -65,7 +65,7 @@ For `configs/assets/btc_1h.json` (`W = 24`, `H = 6`, `max_warmup = 199` due to `
 - CSV values are formatted with `%.9g` (exact 32-bit float round-trip matching `libnn::Dataset::save_csv()`).
 - Generated `nn_config.json` contains **zero unknown keys**, enforces **`validation_shuffle: false`** (strictly chronological split preventing future data leakage), enables **`keep_best_validation_model: true`** (whenever `validation_split > 0`), pre-populates `server.host` and `server.port` from the asset configuration, and emits all `libnn` v0.7.0 regularization & reporting controls:
   - `huber_delta`, `weight_decay` (decoupled L2 / `AdamW` excluding biases), `dropout_rate` (stateless deterministic hidden-layer inverted dropout), `lr_schedule` (`"none" | "cosine"`) + `min_learning_rate`, `grad_clip_norm`, `early_stopping_patience` + `early_stopping_min_delta`, and `report_path`.
-- Per-asset optional `"training"` blocks in `configs/assets/*.json` store calibrated architecture and regularization defaults per timeframe (e.g. `[64, 32]` with `dropout_rate: 0.3` / `weight_decay: 0.01` for `btc_1h`, `[64, 32]` with `dropout_rate: 0.25` / `weight_decay: 0.012` for `btc_4h`, and `[32, 16]` with smaller `batch_size: 32`, `weight_decay: 0.015`, `dropout_rate: 0.3`, and `early_stopping_patience: 25` for `btc_1d`), all overridable via CLI flags in `export_dataset_app.py`.
+- Per-asset optional `"training"` blocks in `configs/assets/*.json` store calibrated architecture and regularization defaults per timeframe (e.g. `[64, 32]` with `batch_size: 128` / `dropout_rate: 0.25` / `weight_decay: 0.008` for `btc_15m`, `[64, 32]` with `dropout_rate: 0.3` / `weight_decay: 0.01` for `btc_1h`, `[64, 32]` with `dropout_rate: 0.25` / `weight_decay: 0.012` for `btc_4h`, and `[32, 16]` with smaller `batch_size: 32`, `weight_decay: 0.015`, `dropout_rate: 0.3`, and `early_stopping_patience: 25` for `btc_1d`), all overridable via CLI flags in `export_dataset_app.py`.
 - Root `configs/bot.json` includes an optional `"export"` block (`output_dir`, `dataset_path_prefix`, `model_save_dir`, `report_dir`) so exported `nn_config.json` files automatically emit `NeuralNetwork`-ready relative paths (e.g. `"data/<file>.csv"`, `"models/<asset>_<kind>.json"`, and `"reports/<asset>_<kind>_report.json"`) without needing CLI flags on every run (set `"dataset_path_prefix": ""` for absolute CSV paths or `"report_dir": ""` to omit automatic report export).
 - `feature_schema.json` stores a SHA-256 `feature_hash` so live inference (`v0.4.0+`) verifies that the loaded model and active indicator configuration match.
 

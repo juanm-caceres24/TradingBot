@@ -23,7 +23,7 @@ configs/bot.json ──► AssetConfig (per asset/timeframe)
 ```
 
 - **Zero external dependencies:** Uses only Python's standard library (`urllib.request`, `json`, `hashlib`, `sqlite3`).
-- **Shared rate-limit throttling:** `SyncService` caches provider instances by canonical full `ProviderConfig` JSON, so multiple assets sharing an identical preset (e.g., `btc_1h`, `btc_4h`, `btc_1d` on `binance_spot.json`) share one unified rate-limit throttle while distinct per-asset overrides remain isolated.
+- **Shared rate-limit throttling:** `SyncService` caches provider instances by canonical full `ProviderConfig` JSON, so multiple assets sharing an identical preset (e.g., `btc_15m`, `btc_1h`, `btc_4h`, `btc_1d` on `binance_spot.json`) share one unified rate-limit throttle while distinct per-asset overrides remain isolated.
 
 ---
 
