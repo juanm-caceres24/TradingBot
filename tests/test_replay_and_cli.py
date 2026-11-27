@@ -93,6 +93,16 @@ class TestReplayAndCLIApps(unittest.TestCase):
                 self.assertGreaterEqual(summary.alerts_triggered, 3)
                 self.assertIsNotNone(summary.mean_abs_return_error)
                 self.assertGreater(summary.directional_total, 0)
+                # Filtered signal metrics cover the 10 bars with a complete 6-bar horizon (222..231)
+                self.assertEqual(summary.signal_trades_evaluated, 10)
+                self.assertEqual(summary.signal_long_total, 10)
+                self.assertEqual(summary.signal_short_total, 0)
+                self.assertEqual(summary.signal_directional_hits, summary.signal_long_hits)
+                self.assertIsNotNone(summary.signal_avg_return_pct)
+                self.assertEqual(
+                    summary.tb_tp_hits + summary.tb_sl_hits + summary.tb_timeouts,
+                    summary.signal_trades_evaluated,
+                )
                 self.assertEqual(len(store.get_alerts(asset_id="btc_1h")), summary.alerts_triggered)
                 self.assertTrue(any(e["type"] == "alert" for e in bus_events))
 
@@ -127,6 +137,8 @@ class TestReplayAndCLIApps(unittest.TestCase):
                     )
                 self.assertEqual(rc_r, 0)
                 self.assertIn("evaluated=16", buf_r.getvalue())
+                self.assertIn("filtered_signals=10", buf_r.getvalue())
+                self.assertIn("TB(TP/SL/TO)=", buf_r.getvalue())
                 self.assertIn("ALERT LONG", buf_r.getvalue())
 
                 live_app = _load_app("live_app", LIVE_APP_PATH)
@@ -206,6 +218,219 @@ class TestReplayAndCLIApps(unittest.TestCase):
                     self.assertEqual(rc_busy, 1)
         finally:
             for srv, th in ((srv_c, th_c), (srv_s, th_s)):
+                srv.shutdown()
+                srv.server_close()
+                th.join(timeout=2.0)
+
+    def test_replay_signal_only_short_triple_barrier_outcomes(self) -> None:
+        # Calibrated SHORT edge (HOLD=0.44, LONG=0.16, SHORT=0.40) evaluated in signal-only mode
+        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.44, 0.16, 0.40], latency_us=4)
+        try:
+            raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+            raw_asset["provider"] = {
+                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+            }
+            raw_asset["features"]["triple_barrier"] = {
+                "mode": "pct",
+                "take_profit_pct": 0.02,
+                "stop_loss_pct": 0.01,
+            }
+            raw_asset["neural_networks"]["candle_predictor"]["enabled"] = False
+            raw_asset["neural_networks"]["signal_classifier"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port_s,
+                "schema_path": "",
+            }
+            asset = parse_asset_dict(raw_asset, base_dir=BTC_1H_ASSET_PATH.parent)
+
+            # Build 231 deterministic candles (first_anchor=222, horizon=6 -> 3 evaluated trades at 222, 223, 224)
+            # Flat base price 100.0 for bars 0..224; then drop to 97.0 (hits SHORT TP 98.0 cleanly)
+            from tradingbot.models import Candle
+
+            start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
+            candles: list[Candle] = []
+            for i in range(231):
+                open_ms = start_ms + i * HOUR_MS
+                # Slight deterministic jitter on warmup bars so ATR/RSI/BB are well-defined and finite
+                base = 100.0 + (0.2 if i % 2 == 0 else -0.2) if i < 222 else (
+                    100.0 if i <= 224 else 97.0
+                )
+                candles.append(
+                    Candle(
+                        provider="synthetic",
+                        symbol="BTCUSDT",
+                        timeframe="1h",
+                        open_time_ms=open_ms,
+                        close_time_ms=open_ms + HOUR_MS - 1,
+                        open=base,
+                        high=base + 0.3,
+                        low=base - 0.3,
+                        close=base,
+                        volume=100.0,
+                        is_closed=True,
+                    )
+                )
+
+            engine = ReplayEngine(asset, clock_ms=lambda: start_ms + 232 * HOUR_MS)
+            summary = engine.run(candles)
+            self.assertEqual(summary.bars_evaluated, 9)
+            self.assertEqual(summary.action_counts["SHORT"], 9)
+            self.assertIsNone(summary.mean_abs_return_error)  # candle_predictor disabled
+            self.assertEqual(summary.directional_total, 0)
+            self.assertEqual(summary.signal_trades_evaluated, 3)
+            self.assertEqual(summary.signal_short_total, 3)
+            self.assertEqual(summary.signal_short_hits, 3)
+            self.assertEqual(summary.signal_directional_hits, 3)
+            self.assertAlmostEqual(summary.signal_avg_return_pct or 0.0, 0.03, places=6)
+            self.assertEqual(summary.tb_tp_hits, 3)
+            self.assertEqual(summary.tb_sl_hits, 0)
+            self.assertEqual(summary.tb_timeouts, 0)
+        finally:
+            srv_s.shutdown()
+            srv_s.server_close()
+            th_s.join(timeout=2.0)
+
+    def test_replay_tb_whipsaw_timeout_24_7_gap_and_cli_edge_summaries(self) -> None:
+        from tradingbot.models import Candle
+
+        srv_long, th_long, port_long = _make_mock_nn_server(264, [0.44, 0.40, 0.16], latency_us=4)
+        srv_short, th_short, port_short = _make_mock_nn_server(264, [0.44, 0.16, 0.40], latency_us=4)
+        srv_hold, th_hold, port_hold = _make_mock_nn_server(264, [0.80, 0.10, 0.10], latency_us=4)
+
+        def _make_asset(port: int) -> dict[str, Any]:
+            raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+            raw["provider"] = {
+                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+            }
+            raw["features"]["triple_barrier"] = {
+                "mode": "pct",
+                "take_profit_pct": 0.02,
+                "stop_loss_pct": 0.01,
+            }
+            raw["neural_networks"]["candle_predictor"]["enabled"] = False
+            raw["neural_networks"]["signal_classifier"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port,
+                "schema_path": "",
+            }
+            return raw
+
+        def _build_series(
+            start_ms: int,
+            *,
+            whipsaw_bar: int | None = None,
+            skip_bar: int | None = None,
+        ) -> list[Candle]:
+            # 229 bars -> first_anchor=222, horizon=6 -> anchor 222 has horizon 223..228
+            out: list[Candle] = []
+            for i in range(229):
+                if skip_bar is not None and i == skip_bar:
+                    continue
+                open_ms = start_ms + i * HOUR_MS
+                base = 100.0 + (0.2 if i % 2 == 0 else -0.2) if i < 222 else 100.0
+                hi = base + 0.3
+                lo = base - 0.3
+                if whipsaw_bar is not None and i == whipsaw_bar:
+                    # Touches both +2% TP (102) and -2% TP/SL (98) on the exact same candle
+                    hi = 103.0
+                    lo = 97.0
+                out.append(
+                    Candle(
+                        provider="synthetic",
+                        symbol="BTCUSDT",
+                        timeframe="1h",
+                        open_time_ms=open_ms,
+                        close_time_ms=open_ms + HOUR_MS - 1,
+                        open=base,
+                        high=hi,
+                        low=lo,
+                        close=base,
+                        volume=100.0,
+                        is_closed=True,
+                    )
+                )
+            return out
+
+        try:
+            start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")
+            clock = lambda: start_ms + 240 * HOUR_MS
+
+            # 1) Same-bar SL+TP whipsaw resolves conservatively as "sl" for both LONG and SHORT
+            whipsaw_candles = _build_series(start_ms, whipsaw_bar=223)
+            for port, expected_action in ((port_long, "LONG"), (port_short, "SHORT")):
+                asset = parse_asset_dict(_make_asset(port), base_dir=BTC_1H_ASSET_PATH.parent)
+                s_whip = ReplayEngine(asset, clock_ms=clock).run(whipsaw_candles)
+                self.assertEqual(s_whip.action_counts[expected_action], 7)
+                self.assertEqual(s_whip.signal_trades_evaluated, 1)
+                self.assertEqual(s_whip.tb_tp_hits, 0)
+                self.assertEqual(s_whip.tb_sl_hits, 1)
+                self.assertEqual(s_whip.tb_timeouts, 0)
+
+            # 2) Flat horizon never hits TP or SL -> timeout (tb_timeouts=1, tb_resolved=0)
+            flat_candles = _build_series(start_ms)
+            asset_long = parse_asset_dict(_make_asset(port_long), base_dir=BTC_1H_ASSET_PATH.parent)
+            s_to = ReplayEngine(asset_long, clock_ms=clock).run(flat_candles)
+            self.assertEqual(s_to.signal_trades_evaluated, 1)
+            self.assertEqual(s_to.tb_tp_hits, 0)
+            self.assertEqual(s_to.tb_sl_hits, 0)
+            self.assertEqual(s_to.tb_timeouts, 1)
+
+            # 3) Timestamp gap inside 24/7 horizon (skip bar 225, add bar 229 so idx+6 exists but shifted)
+            gapped = _build_series(start_ms, skip_bar=225)
+            extra_ms = start_ms + 229 * HOUR_MS
+            gapped.append(
+                Candle(
+                    provider="synthetic",
+                    symbol="BTCUSDT",
+                    timeframe="1h",
+                    open_time_ms=extra_ms,
+                    close_time_ms=extra_ms + HOUR_MS - 1,
+                    open=100.0,
+                    high=100.3,
+                    low=99.7,
+                    close=100.0,
+                    volume=100.0,
+                    is_closed=True,
+                )
+            )
+            s_gap = ReplayEngine(asset_long, clock_ms=clock).run(gapped)
+            self.assertEqual(s_gap.signal_trades_evaluated, 0)
+
+            # 4) CLI edge summaries: win_rate=N/A (all timeouts) and filtered_signals=0 (all HOLD)
+            replay_app = _load_app("replay_app_edges", REPLAY_APP_PATH)
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                db_path = tmp_path / "market.db"
+                with SQLiteCandleStore(db_path) as store:
+                    store.upsert_candles(flat_candles)
+
+                for port, expected_substr in (
+                    (port_long, "TB(TP/SL/TO)=0/0/1 (win_rate=N/A)"),
+                    (port_hold, "filtered_signals=0 (no actionable LONG/SHORT trades with complete horizon)"),
+                ):
+                    asset_file = tmp_path / f"btc_1h_{port}.json"
+                    asset_file.write_text(json.dumps(_make_asset(port)), encoding="utf-8")
+                    bot_cfg = tmp_path / f"bot_{port}.json"
+                    bot_cfg.write_text(
+                        json.dumps(
+                            {
+                                "storage": {"db_path": str(db_path), "wal_mode": True, "busy_timeout_ms": 5000},
+                                "web": {"enabled": False, "host": "127.0.0.1", "port": 8000, "visible_candles": 70},
+                                "notifications": {"api_enabled": True, "webhooks": []},
+                                "assets": [{"config_path": str(asset_file)}],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        rc = replay_app.main([str(bot_cfg), "--asset", "btc_1h"])
+                    self.assertEqual(rc, 0)
+                    self.assertIn(expected_substr, buf.getvalue())
+        finally:
+            for srv, th in ((srv_long, th_long), (srv_short, th_short), (srv_hold, th_hold)):
                 srv.shutdown()
                 srv.server_close()
                 th.join(timeout=2.0)

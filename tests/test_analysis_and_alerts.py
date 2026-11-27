@@ -212,6 +212,139 @@ class TestReconstructionAndTradeAnalyzer(unittest.TestCase):
         self.assertEqual(res_poor_c.action, "HOLD")
         self.assertIn("filtered by R:R", res_poor_c.reason)
 
+    def test_trade_analyzer_directional_edge_mode(self) -> None:
+        edge_analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.55,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.005,
+                signal_decision_mode="directional_edge",
+                min_directional_prob=0.35,
+                min_directional_ratio=1.5,
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        bullish_candles = (
+            PredictedCandle(1, HOUR_MS, 100.0, 101.5, 99.6, 100.8, 0.9),
+            PredictedCandle(2, 2 * HOUR_MS, 100.8, 102.5, 100.2, 101.2, 0.8),
+        )
+        bearish_candles = (
+            PredictedCandle(1, HOUR_MS, 100.0, 100.4, 98.5, 99.2, 0.9),
+            PredictedCandle(2, 2 * HOUR_MS, 99.2, 99.8, 97.5, 98.8, 0.8),
+        )
+
+        # Calibrated bullish edge where HOLD is still argmax (0.44 > 0.38 > 0.18, ratio=2.11x >= 1.5x)
+        edge_long = SignalPrediction(hold_prob=0.44, long_prob=0.38, short_prob=0.18)
+        res_sig_only = edge_analyzer.analyze(100.0, predicted_candles=(), signal=edge_long, anchor_atr=2.0)
+        self.assertEqual(res_sig_only.action, "LONG")
+        self.assertAlmostEqual(res_sig_only.confidence, 0.38)
+        self.assertAlmostEqual(res_sig_only.risk_reward or 0.0, 1.5)
+        self.assertIn("edge=38.0%", res_sig_only.reason)
+
+        # Dual-model cross-confirmation accepts matching bullish forecast and rejects bearish conflict
+        res_dual_ok = edge_analyzer.analyze(
+            100.0, predicted_candles=bullish_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_dual_ok.action, "LONG")
+        self.assertAlmostEqual(res_dual_ok.confidence, 0.38)
+        self.assertIn("Cross-confirmed LONG", res_dual_ok.reason)
+
+        res_dual_conflict = edge_analyzer.analyze(
+            100.0, predicted_candles=bearish_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_dual_conflict.action, "HOLD")
+        self.assertIn("Conflicting models", res_dual_conflict.reason)
+
+        # Bearish directional edge with opp_prob == 0.0 -> infinite ratio, no ZeroDivisionError
+        edge_short_zero = SignalPrediction(hold_prob=0.60, long_prob=0.0, short_prob=0.40)
+        res_zero = edge_analyzer.analyze(
+            100.0, predicted_candles=bearish_candles, signal=edge_short_zero, anchor_atr=2.0
+        )
+        self.assertEqual(res_zero.action, "SHORT")
+        self.assertIn("(inf)", res_zero.reason)
+
+        # Rejections: weak ratio (0.36 vs 0.30 = 1.20x < 1.5x), low prob (0.30 vs 0.10), exact tie
+        for weak_sig in (
+            SignalPrediction(hold_prob=0.34, long_prob=0.36, short_prob=0.30),
+            SignalPrediction(hold_prob=0.60, long_prob=0.30, short_prob=0.10),
+            SignalPrediction(hold_prob=0.20, long_prob=0.40, short_prob=0.40),
+        ):
+            res_hold = edge_analyzer.analyze(
+                100.0, predicted_candles=bullish_candles, signal=weak_sig, anchor_atr=2.0
+            )
+            self.assertEqual(res_hold.action, "HOLD")
+            self.assertAlmostEqual(res_hold.confidence, weak_sig.hold_prob)
+
+        # Exact directional_edge boundaries (dir_prob == 0.35 and exact 1.50x ratio 0.36/0.24)
+        exact_prob_sig = SignalPrediction(hold_prob=0.45, long_prob=0.35, short_prob=0.20)
+        res_exact_prob = edge_analyzer.analyze(
+            100.0, predicted_candles=bullish_candles, signal=exact_prob_sig, anchor_atr=2.0
+        )
+        self.assertEqual(res_exact_prob.action, "LONG")
+        self.assertAlmostEqual(res_exact_prob.confidence, 0.35)
+
+        exact_ratio_sig = SignalPrediction(hold_prob=0.40, long_prob=0.36, short_prob=0.24)
+        res_exact_ratio = edge_analyzer.analyze(
+            100.0, predicted_candles=bullish_candles, signal=exact_ratio_sig, anchor_atr=2.0
+        )
+        self.assertEqual(res_exact_ratio.action, "LONG")
+        self.assertAlmostEqual(res_exact_ratio.confidence, 0.36)
+
+        # When directional_edge qualifies but downstream filters reject, confidence remains dir_prob
+        # (a) Signal-only filtered by min_expected_move_pct in low-volatility ATR regime
+        res_low_vol_sig = edge_analyzer.analyze(
+            100.0, predicted_candles=(), signal=edge_long, anchor_atr=0.1
+        )
+        self.assertEqual(res_low_vol_sig.action, "HOLD")
+        self.assertIn("filtered by expected move", res_low_vol_sig.reason)
+        self.assertAlmostEqual(res_low_vol_sig.confidence, 0.38)
+
+        # (b) Dual-model filtered by min_expected_move_pct / min_risk_reward preserves dir_prob
+        flat_candles = (PredictedCandle(1, HOUR_MS, 100.0, 100.2, 99.9, 100.1, 0.9),)
+        res_dual_flat = edge_analyzer.analyze(
+            100.0, predicted_candles=flat_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_dual_flat.action, "HOLD")
+        self.assertIn("filtered by expected move", res_dual_flat.reason)
+        self.assertAlmostEqual(res_dual_flat.confidence, 0.38)
+
+        poor_rr_candles = (PredictedCandle(1, HOUR_MS, 100.0, 101.0, 97.0, 100.8, 0.9),)
+        res_dual_rr = edge_analyzer.analyze(
+            100.0, predicted_candles=poor_rr_candles, signal=edge_long, anchor_atr=2.0
+        )
+        self.assertEqual(res_dual_rr.action, "HOLD")
+        self.assertIn("filtered by R:R", res_dual_rr.reason)
+        self.assertAlmostEqual(res_dual_rr.confidence, 0.38)
+
+        # Compare against argmax mode: HOLD=0.80 > 0.55 must NOT emit contradictory "80.0% < 55.0%"
+        argmax_analyzer = TradeAnalyzer(
+            AnalysisConfig(
+                min_signal_confidence=0.55,
+                min_risk_reward=1.5,
+                min_expected_move_pct=0.005,
+                signal_decision_mode="argmax",
+            ),
+            TripleBarrierConfig(mode="atr_multiple", take_profit_atr=1.5, stop_loss_atr=1.0),
+        )
+        self.assertEqual(
+            argmax_analyzer.analyze(100.0, predicted_candles=(), signal=edge_long, anchor_atr=2.0).action,
+            "HOLD",
+        )
+        strong_hold = SignalPrediction(hold_prob=0.80, long_prob=0.12, short_prob=0.08)
+        res_argmax_hold = argmax_analyzer.analyze(
+            100.0, predicted_candles=bullish_candles, signal=strong_hold, anchor_atr=2.0
+        )
+        self.assertEqual(res_argmax_hold.action, "HOLD")
+        self.assertIn("argmax=HOLD 80.0%", res_argmax_hold.reason)
+        self.assertNotIn("< 55.0%", res_argmax_hold.reason)
+
+        # Invalid signal_decision_mode raises ValueError defensively
+        with self.assertRaises(ValueError):
+            TradeAnalyzer(
+                AnalysisConfig(0.55, 1.5, 0.005, signal_decision_mode="invalid"),
+                TripleBarrierConfig(take_profit_pct=0.02, stop_loss_pct=0.01),
+            )
+
 
 class TestAlertEvaluator(unittest.TestCase):
     def _make_snapshot(

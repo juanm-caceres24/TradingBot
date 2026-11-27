@@ -16,8 +16,77 @@ class TradeAnalyzer:
         analysis_config: AnalysisConfig,
         triple_barrier: TripleBarrierConfig,
     ) -> None:
+        if analysis_config.signal_decision_mode not in ("argmax", "directional_edge"):
+            raise ValueError(
+                f"Unsupported signal_decision_mode: {analysis_config.signal_decision_mode!r}"
+            )
         self._cfg = analysis_config
         self._tb = triple_barrier
+
+    def _select_signal_action(
+        self, signal: SignalPrediction
+    ) -> tuple[str, float, str, str]:
+        """Evaluate a multiclass Softmax signal into (action, confidence, reject_detail, accept_detail).
+
+        - ``argmax``: requires ``signal.best_action != "HOLD"`` and
+          ``signal.best_probability >= min_signal_confidence``.
+        - ``directional_edge``: compares ``long_prob`` vs ``short_prob`` directly so
+          calibrated probabilities under a high HOLD prior are not paralyzed by argmax,
+          requiring ``dir_prob >= min_directional_prob`` and
+          ``dir_prob >= opp_prob * min_directional_ratio``.
+        """
+        if self._cfg.signal_decision_mode == "argmax":
+            best_act = signal.best_action
+            best_prob = signal.best_probability
+            if best_act == "HOLD":
+                return (
+                    "HOLD",
+                    best_prob,
+                    f"argmax=HOLD {best_prob:.1%}",
+                    "",
+                )
+            if best_prob < self._cfg.min_signal_confidence:
+                return (
+                    "HOLD",
+                    best_prob,
+                    f"{best_act} {best_prob:.1%} < {self._cfg.min_signal_confidence:.1%}",
+                    "",
+                )
+            return best_act, best_prob, "", f"prob={best_prob:.1%}"
+
+        # directional_edge mode
+        if signal.long_prob > signal.short_prob:
+            dir_act, dir_prob, opp_prob = "LONG", signal.long_prob, signal.short_prob
+        elif signal.short_prob > signal.long_prob:
+            dir_act, dir_prob, opp_prob = "SHORT", signal.short_prob, signal.long_prob
+        else:
+            return (
+                "HOLD",
+                signal.hold_prob,
+                f"tied directional probs (LONG={signal.long_prob:.1%}, SHORT={signal.short_prob:.1%})",
+                "",
+            )
+
+        ratio_str = f"{dir_prob / opp_prob:.2f}x" if opp_prob > 1e-12 else "inf"
+        meets_prob = (dir_prob + 1e-12) >= self._cfg.min_directional_prob
+        meets_ratio = (dir_prob + 1e-12) >= (opp_prob * self._cfg.min_directional_ratio)
+        if not meets_prob or not meets_ratio:
+            return (
+                "HOLD",
+                signal.hold_prob,
+                (
+                    f"edge {dir_act} {dir_prob:.1%} vs {opp_prob:.1%} ({ratio_str}; "
+                    f"min_prob={self._cfg.min_directional_prob:.1%}, "
+                    f"min_ratio={self._cfg.min_directional_ratio:.2f}x)"
+                ),
+                "",
+            )
+        return (
+            dir_act,
+            dir_prob,
+            "",
+            f"edge={dir_prob:.1%} vs {opp_prob:.1%} ({ratio_str})",
+        )
 
     def _compute_candle_levels(
         self,
@@ -118,24 +187,39 @@ class TradeAnalyzer:
         # Case 1: Signal Classifier only (no Candle Predictor)
         if has_signal and not has_candles:
             assert signal is not None
-            best_act = signal.best_action
-            best_prob = signal.best_probability
-            if best_act == "HOLD" or best_prob < self._cfg.min_signal_confidence:
+            sig_act, sig_prob, reject_detail, accept_detail = self._select_signal_action(signal)
+            if sig_act == "HOLD":
+                hold_reason = (
+                    f"Signal-only HOLD (best={signal.best_action} {signal.best_probability:.1%}, "
+                    f"min={self._cfg.min_signal_confidence:.1%})"
+                    if self._cfg.signal_decision_mode == "argmax"
+                    else f"Signal-only HOLD ({reject_detail})"
+                )
                 return TradeAnalysis(
                     action="HOLD",
                     expected_move_pct=0.0,
                     estimated_tp=None,
                     estimated_sl=None,
                     risk_reward=None,
-                    confidence=round(best_prob, 4),
-                    reason=(
-                        f"Signal-only HOLD (best={best_act} {best_prob:.1%}, "
-                        f"min={self._cfg.min_signal_confidence:.1%})"
-                    ),
+                    confidence=round(sig_prob, 4),
+                    reason=hold_reason,
                 )
             tp, sl, rr, signed_move = self._compute_triple_barrier_levels(
-                best_act, anchor_close, anchor_atr=anchor_atr
+                sig_act, anchor_close, anchor_atr=anchor_atr
             )
+            if abs(signed_move) < self._cfg.min_expected_move_pct:
+                return TradeAnalysis(
+                    action="HOLD",
+                    expected_move_pct=round(signed_move, 6),
+                    estimated_tp=tp,
+                    estimated_sl=sl,
+                    risk_reward=rr,
+                    confidence=round(sig_prob, 4),
+                    reason=(
+                        f"Signal-only {sig_act} filtered by expected move "
+                        f"({signed_move:+.2%} < {self._cfg.min_expected_move_pct:.2%})"
+                    ),
+                )
             if rr is not None and rr < self._cfg.min_risk_reward:
                 return TradeAnalysis(
                     action="HOLD",
@@ -143,17 +227,17 @@ class TradeAnalyzer:
                     estimated_tp=tp,
                     estimated_sl=sl,
                     risk_reward=rr,
-                    confidence=round(best_prob, 4),
-                    reason=f"Signal-only {best_act} filtered by R:R ({rr:.2f} < {self._cfg.min_risk_reward:.2f})",
+                    confidence=round(sig_prob, 4),
+                    reason=f"Signal-only {sig_act} filtered by R:R ({rr:.2f} < {self._cfg.min_risk_reward:.2f})",
                 )
             return TradeAnalysis(
-                action=best_act,
+                action=sig_act,
                 expected_move_pct=round(signed_move, 6),
                 estimated_tp=tp,
                 estimated_sl=sl,
                 risk_reward=rr,
-                confidence=round(best_prob, 4),
-                reason=f"Signal-only {best_act}: prob={best_prob:.1%}, TB R:R={rr:.2f}",
+                confidence=round(sig_prob, 4),
+                reason=f"Signal-only {sig_act}: {accept_detail}, TB R:R={rr:.2f}",
             )
 
         # Compute candle forecast summary (shared by candle-only and dual-model modes)
@@ -216,10 +300,9 @@ class TradeAnalyzer:
 
         # Case 3: Dual-Model Cross-Confirmation (Candle Predictor + Signal Classifier)
         assert signal is not None
-        sig_act = signal.best_action
-        sig_prob = signal.best_probability
+        sig_act, sig_prob, reject_detail, accept_detail = self._select_signal_action(signal)
 
-        if sig_act == "HOLD" or sig_prob < self._cfg.min_signal_confidence:
+        if sig_act == "HOLD":
             return TradeAnalysis(
                 action="HOLD",
                 expected_move_pct=round(expected_move_pct, 6),
@@ -228,8 +311,8 @@ class TradeAnalyzer:
                 risk_reward=None,
                 confidence=round(sig_prob, 4),
                 reason=(
-                    f"Signal below threshold ({sig_act} {sig_prob:.1%} < "
-                    f"{self._cfg.min_signal_confidence:.1%}); forecast={expected_move_pct:+.2%}"
+                    f"Signal below threshold ({reject_detail}); "
+                    f"forecast={expected_move_pct:+.2%}"
                 ),
             )
 
@@ -281,6 +364,11 @@ class TradeAnalyzer:
                 ),
             )
 
+        dual_sig_tag = (
+            f"signal={sig_prob:.1%}"
+            if self._cfg.signal_decision_mode == "argmax"
+            else accept_detail
+        )
         return TradeAnalysis(
             action=sig_act,
             expected_move_pct=round(expected_move_pct, 6),
@@ -289,7 +377,7 @@ class TradeAnalyzer:
             risk_reward=rr,
             confidence=round(sig_prob, 4),
             reason=(
-                f"Cross-confirmed {sig_act}: signal={sig_prob:.1%}, "
+                f"Cross-confirmed {sig_act}: {dual_sig_tag}, "
                 f"forecast={expected_move_pct:+.2%}, R:R={rr:.2f}"
             ),
         )

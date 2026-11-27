@@ -30,10 +30,14 @@ Transforms $H \times 4$ relative OHLC outputs back into absolute prices using th
 
 ## 3. Trade Analysis (`TradeAnalyzer`)
 
+Supports two configurable Softmax signal decision modes in `analysis.signal_decision_mode`:
+- **`"argmax"` (default for legacy configs):** requires `signal.best_action != "HOLD"` and `signal.best_probability >= min_signal_confidence`.
+- **`"directional_edge"` (enabled on shipped BTC profiles):** compares `long_prob` vs. `short_prob` directly so well-calibrated models under a ~50% `HOLD` prior are not paralyzed by `argmax`, qualifying a directional action when `dir_prob >= min_directional_prob` (default `0.35`) and `dir_prob >= opp_prob * min_directional_ratio` (default `1.5`). Reported `confidence` equals `dir_prob` whenever a directional edge qualifies (or `hold_prob` when no directional edge qualifies; halved in dual-model directional conflicts).
+
 Supports all four per-asset model combinations cleanly (`extra_models` outputs are forwarded verbatim in `PredictionSnapshot.extra_outputs`):
-1. **Dual-Model Cross-Confirmation (`candle_predictor` + `signal_classifier`):** Requires `signal.best_probability >= min_signal_confidence`, rejects active directional contradictions and moves with `|expected_move_pct| < min_expected_move_pct`, estimates TP/SL from the projected OHLC path (falling back to the configured `triple_barrier` TP/SL levels whenever the projected path does not extend past `anchor_close` on that side), and enforces `risk_reward >= min_risk_reward`.
+1. **Dual-Model Cross-Confirmation (`candle_predictor` + `signal_classifier`):** Evaluates the signal using `signal_decision_mode`, rejects active directional contradictions and moves with `|expected_move_pct| < min_expected_move_pct`, estimates TP/SL from the projected OHLC path (falling back to the configured `triple_barrier` TP/SL levels whenever the projected path does not extend past `anchor_close` on that side), and enforces `risk_reward >= min_risk_reward`.
 2. **Candle Predictor Only:** Evaluates `expected_move_pct` against `min_expected_move_pct`, computes directional consistency across all $H$ bars and R:R (using the same `triple_barrier` TP/SL fallback), and produces an explicit heuristic confidence score.
-3. **Signal Classifier Only:** Evaluates calibrated Softmax probability against `min_signal_confidence` and derives TP/SL and R:R from the asset's `triple_barrier` parameters (`pct` or volatility-adaptive `atr_multiple`).
+3. **Signal Classifier Only:** Evaluates calibrated Softmax probabilities via `signal_decision_mode`, derives TP/SL and R:R from the asset's `triple_barrier` parameters (`pct` or volatility-adaptive `atr_multiple`), and enforces both `|expected_move_pct| >= min_expected_move_pct` and `risk_reward >= min_risk_reward`.
 4. **No Primary Models Enabled:** Emits neutral `HOLD` (for charting-only assets).
 
 ---

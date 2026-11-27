@@ -268,12 +268,14 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             validate_nn_config_dict(nn_cfg_c)
             self.assertEqual(nn_cfg_c["training"]["loss"], "huber")
             self.assertAlmostEqual(nn_cfg_c["training"]["huber_delta"], 1.0)
-            self.assertAlmostEqual(nn_cfg_c["training"]["weight_decay"], 0.001)
-            self.assertAlmostEqual(nn_cfg_c["training"]["dropout_rate"], 0.2)
+            self.assertEqual(nn_cfg_c["training"]["epochs"], 80)
+            self.assertAlmostEqual(nn_cfg_c["training"]["learning_rate"], 0.0004)
+            self.assertAlmostEqual(nn_cfg_c["training"]["weight_decay"], 0.01)
+            self.assertAlmostEqual(nn_cfg_c["training"]["dropout_rate"], 0.3)
             self.assertEqual(nn_cfg_c["training"]["lr_schedule"], "cosine")
-            self.assertAlmostEqual(nn_cfg_c["training"]["min_learning_rate"], 0.0001)
+            self.assertAlmostEqual(nn_cfg_c["training"]["min_learning_rate"], 0.00004)
             self.assertAlmostEqual(nn_cfg_c["training"]["grad_clip_norm"], 1.0)
-            self.assertEqual(nn_cfg_c["training"]["early_stopping_patience"], 25)
+            self.assertEqual(nn_cfg_c["training"]["early_stopping_patience"], 20)
             self.assertAlmostEqual(nn_cfg_c["training"]["early_stopping_min_delta"], 0.0001)
             self.assertEqual(nn_cfg_c["training"]["report_path"], "reports/btc_1h_candles_report.json")
             self.assertFalse(nn_cfg_c["training"]["validation_shuffle"])
@@ -380,8 +382,8 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertEqual(syn_nn_cfg["model"]["save_path"], "models/btc_1h_candles.json")
             self.assertEqual(syn_nn_cfg["training"]["report_path"], "reports/btc_1h_candles_report.json")
             self.assertEqual(syn_nn_cfg["training"]["loss"], "huber")
-            self.assertAlmostEqual(syn_nn_cfg["training"]["weight_decay"], 0.001)
-            self.assertAlmostEqual(syn_nn_cfg["training"]["dropout_rate"], 0.2)
+            self.assertAlmostEqual(syn_nn_cfg["training"]["weight_decay"], 0.01)
+            self.assertAlmostEqual(syn_nn_cfg["training"]["dropout_rate"], 0.3)
 
             # Mode 2: export from local SQLite database
             db_path = tmp_path / "market.db"
@@ -461,7 +463,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                         "--grad-clip",
                         "2.5",
                         "--lr",
-                        "0.00005",
+                        "0.00002",
                         "--val-split",
                         "0.0",
                     ]
@@ -478,9 +480,9 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertAlmostEqual(ov_cfg["training"]["weight_decay"], 0.005)
             self.assertAlmostEqual(ov_cfg["training"]["dropout_rate"], 0.3)
             self.assertAlmostEqual(ov_cfg["training"]["grad_clip_norm"], 2.5)
-            # Inherited min_learning_rate (0.0001) clamps cleanly down to --lr (0.00005)
-            self.assertAlmostEqual(ov_cfg["training"]["learning_rate"], 0.00005)
-            self.assertAlmostEqual(ov_cfg["training"]["min_learning_rate"], 0.00005)
+            # Inherited min_learning_rate (0.00004) clamps cleanly down to --lr (0.00002)
+            self.assertAlmostEqual(ov_cfg["training"]["learning_rate"], 0.00002)
+            self.assertAlmostEqual(ov_cfg["training"]["min_learning_rate"], 0.00002)
             # Inherited early_stopping_patience is cleanly disabled when --val-split 0.0 is passed
             self.assertEqual(ov_cfg["training"]["early_stopping_patience"], 0)
             self.assertFalse(ov_cfg["training"]["keep_best_validation_model"])

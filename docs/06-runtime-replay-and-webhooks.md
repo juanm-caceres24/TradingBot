@@ -56,7 +56,11 @@ Whenever a closed candle satisfies an asset's alert rules (`consecutive_candles`
 
 ## 3. Historical Replay Engine (`ReplayEngine`)
 
-Steps chronologically through stored SQLite candles in O(N) time (exploiting strict causality of all built-in indicators), evaluating real `NeuralNetwork` `server_app` predictions, post-hoc directional accuracy, horizon return MAE, and alert triggers without waiting days for live candles to close.
+Steps chronologically through stored SQLite candles in O(N) time (exploiting strict causality of all built-in indicators), evaluating real `NeuralNetwork` `server_app` predictions and alert triggers without waiting days for live candles to close.
+
+`ReplaySummary` and `apps/replay_app.py` report two complementary post-hoc metric layers:
+- **All-bar candle forecast metrics:** `directional_acc` and `horizon_MAE` across all bars with a valid future horizon `t+H` (when `candle_predictor` is enabled).
+- **Filtered actionable signal metrics (`LONG` / `SHORT` only):** works across dual-model, candle-only, and signal-only modes, reporting `signal_trades_evaluated`, directional accuracy overall and per side (`LONG` / `SHORT`), mean signed horizon return (`signal_avg_return_pct`), and conservative Triple-Barrier outcome counts (`tb_tp_hits`, `tb_sl_hits`, `tb_timeouts`, where same-bar SL+TP collisions resolve conservatively to SL, matching `FeaturePipeline.encode_signal_target`).
 
 ---
 

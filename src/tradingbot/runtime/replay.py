@@ -38,6 +38,16 @@ class ReplaySummary:
     directional_total: int
     mean_abs_return_error: float | None
     alerts: tuple[AlertEvent, ...]
+    signal_trades_evaluated: int = 0
+    signal_directional_hits: int = 0
+    signal_avg_return_pct: float | None = None
+    signal_long_hits: int = 0
+    signal_long_total: int = 0
+    signal_short_hits: int = 0
+    signal_short_total: int = 0
+    tb_tp_hits: int = 0
+    tb_sl_hits: int = 0
+    tb_timeouts: int = 0
 
 
 StepCallback = Callable[[int, Candle, PredictionSnapshot, AlertEvent | None], None]
@@ -64,6 +74,44 @@ class ReplayEngine:
     def verify_models(self) -> None:
         if self._asset.neural_networks.verify_schema_on_start and self._nn_client.has_any_model:
             self._nn_client.verify_all()
+
+    def _evaluate_triple_barrier_trade(
+        self,
+        action: str,
+        candles: Sequence[Candle],
+        anchor_index: int,
+        anchor_close: float,
+        atr: float | None,
+    ) -> str:
+        """Evaluate whether a taken LONG/SHORT hits TP, SL, or times out over t+1..t+H.
+
+        Mirrors the conservative resolution of FeaturePipeline.encode_signal_target:
+        if both SL and TP are touched within the same bar, SL takes precedence.
+        """
+        horizon = self._asset.features.forecast_horizon
+        tp_dist, sl_dist = self._asset.features.triple_barrier.barrier_distances(
+            anchor_close, atr=atr
+        )
+        if action == "LONG":
+            tp_price = anchor_close + tp_dist
+            sl_price = max(1e-8, anchor_close - sl_dist)
+            for offset in range(1, horizon + 1):
+                fc = candles[anchor_index + offset]
+                if fc.low <= sl_price:
+                    return "sl"
+                if fc.high >= tp_price:
+                    return "tp"
+            return "timeout"
+
+        tp_price = max(1e-8, anchor_close - tp_dist)
+        sl_price = anchor_close + sl_dist
+        for offset in range(1, horizon + 1):
+            fc = candles[anchor_index + offset]
+            if fc.high >= sl_price:
+                return "sl"
+            if fc.low <= tp_price:
+                return "tp"
+        return "timeout"
 
     def run(
         self,
@@ -114,6 +162,16 @@ class ReplayEngine:
         directional_hits = 0
         directional_total = 0
         abs_errors: list[float] = []
+        signal_trades_evaluated = 0
+        signal_directional_hits = 0
+        signal_signed_returns: list[float] = []
+        signal_long_hits = 0
+        signal_long_total = 0
+        signal_short_hits = 0
+        signal_short_total = 0
+        tb_tp_hits = 0
+        tb_sl_hits = 0
+        tb_timeouts = 0
         emitted_alerts: list[AlertEvent] = []
 
         for idx in range(first_anchor, n):
@@ -160,8 +218,8 @@ class ReplayEngine:
             predictions_made += 1
             action_counts[analysis.action] = action_counts.get(analysis.action, 0) + 1
 
-            # Post-hoc accuracy check when actual future bar `idx + horizon` exists and matches horizon time.
-            if idx + horizon < n and predicted_candles:
+            # Post-hoc evaluation when actual future bar `idx + horizon` exists and matches horizon time.
+            if idx + horizon < n:
                 future_candle = candles[idx + horizon]
                 horizon_valid = (
                     self._asset.market.market_schedule != "24/7"
@@ -169,14 +227,46 @@ class ReplayEngine:
                     == ctx.anchor_candle.open_time_ms + horizon * tf.interval_ms
                 )
                 if horizon_valid:
-                    actual_future_close = future_candle.close
-                    actual_ret = (actual_future_close - ctx.anchor_close) / ctx.anchor_close
-                    pred_ret = (predicted_candles[-1].close - ctx.anchor_close) / ctx.anchor_close
-                    abs_errors.append(abs(pred_ret - actual_ret))
-                    if actual_ret != 0.0 and pred_ret != 0.0:
-                        directional_total += 1
-                        if (actual_ret > 0.0) == (pred_ret > 0.0):
-                            directional_hits += 1
+                    actual_ret = (future_candle.close - ctx.anchor_close) / ctx.anchor_close
+                    if predicted_candles:
+                        pred_ret = (
+                            predicted_candles[-1].close - ctx.anchor_close
+                        ) / ctx.anchor_close
+                        abs_errors.append(abs(pred_ret - actual_ret))
+                        if actual_ret != 0.0 and pred_ret != 0.0:
+                            directional_total += 1
+                            if (actual_ret > 0.0) == (pred_ret > 0.0):
+                                directional_hits += 1
+
+                    if analysis.action in ("LONG", "SHORT"):
+                        signal_trades_evaluated += 1
+                        signed_ret = actual_ret if analysis.action == "LONG" else -actual_ret
+                        signal_signed_returns.append(signed_ret)
+                        is_hit = signed_ret > 0.0
+                        if is_hit:
+                            signal_directional_hits += 1
+                        if analysis.action == "LONG":
+                            signal_long_total += 1
+                            if is_hit:
+                                signal_long_hits += 1
+                        else:
+                            signal_short_total += 1
+                            if is_hit:
+                                signal_short_hits += 1
+
+                        tb_outcome = self._evaluate_triple_barrier_trade(
+                            analysis.action,
+                            candles,
+                            idx,
+                            ctx.anchor_close,
+                            ctx.atr,
+                        )
+                        if tb_outcome == "tp":
+                            tb_tp_hits += 1
+                        elif tb_outcome == "sl":
+                            tb_sl_hits += 1
+                        else:
+                            tb_timeouts += 1
 
             if persist_predictions and store is not None:
                 store.save_prediction(
@@ -223,6 +313,11 @@ class ReplayEngine:
                 self._sleep_fn(step_delay_sec)
 
         mae = (sum(abs_errors) / len(abs_errors)) if abs_errors else None
+        sig_avg_ret = (
+            sum(signal_signed_returns) / len(signal_signed_returns)
+            if signal_signed_returns
+            else None
+        )
         return ReplaySummary(
             asset_id=self._asset.id,
             total_candles=n,
@@ -234,4 +329,14 @@ class ReplayEngine:
             directional_total=directional_total,
             mean_abs_return_error=mae,
             alerts=tuple(emitted_alerts),
+            signal_trades_evaluated=signal_trades_evaluated,
+            signal_directional_hits=signal_directional_hits,
+            signal_avg_return_pct=sig_avg_ret,
+            signal_long_hits=signal_long_hits,
+            signal_long_total=signal_long_total,
+            signal_short_hits=signal_short_hits,
+            signal_short_total=signal_short_total,
+            tb_tp_hits=tb_tp_hits,
+            tb_sl_hits=tb_sl_hits,
+            tb_timeouts=tb_timeouts,
         )
