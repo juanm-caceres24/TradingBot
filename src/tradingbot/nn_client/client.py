@@ -1,4 +1,4 @@
-"""HTTP/1.1 + JSON client matching NeuralNetwork (libnn v0.6.0) server_app API.
+"""HTTP/1.1 + JSON client matching NeuralNetwork (libnn v0.7.0) server_app API.
 
 Endpoints consumed (docs/06-inference-server-api.md):
 - GET  /health  -> {"status": "ok"}
@@ -47,7 +47,7 @@ class RawPrediction:
 
 
 class NeuralNetworkClient:
-    """Stateless stdlib HTTP client for one NeuralNetwork v0.6.0 server_app instance."""
+    """Stateless stdlib HTTP client for one NeuralNetwork v0.7.0 server_app instance."""
 
     def __init__(self, host: str, port: int, *, timeout_sec: float = 5.0) -> None:
         if not host or not isinstance(host, str):

@@ -30,7 +30,7 @@ def _make_mock_nn_server(
     *,
     latency_us: int = 7,
 ) -> tuple[http.server.ThreadingHTTPServer, threading.Thread, int]:
-    """Spin up a lightweight mock matching NeuralNetwork v0.6.0 server_app HTTP/JSON contract."""
+    """Spin up a lightweight mock matching NeuralNetwork v0.7.0 server_app HTTP/JSON contract."""
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:

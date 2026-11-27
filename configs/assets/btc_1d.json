@@ -102,5 +102,25 @@
     "min_expected_move_pct": 0.015,
     "consecutive_candles": 2,
     "cooldown_candles": 3
+  },
+  "training": {
+    "hidden_layers": [32, 16],
+    "hidden_activation": "leaky_relu",
+    "candle_loss": "huber",
+    "huber_delta": 1.0,
+    "optimizer": "adam",
+    "epochs": 300,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "lr_schedule": "cosine",
+    "min_learning_rate": 0.0001,
+    "weight_decay": 0.002,
+    "dropout_rate": 0.25,
+    "grad_clip_norm": 1.0,
+    "validation_split": 0.2,
+    "early_stopping_patience": 30,
+    "early_stopping_min_delta": 0.0001,
+    "num_threads": 4,
+    "log_every_epochs": 10
   }
 }
