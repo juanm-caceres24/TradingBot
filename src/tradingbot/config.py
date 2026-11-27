@@ -37,6 +37,7 @@ _VALID_RUNTIME_MODES = frozenset({"sync_live", "backfill", "live_only", "replay"
 _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
 _VALID_TB_MODES = frozenset({"pct", "atr_multiple"})
+_VALID_SIGNAL_DECISION_MODES = frozenset({"argmax", "directional_edge"})
 _VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
 _VALID_NN_HIDDEN_ACTIVATIONS = frozenset({"relu", "tanh", "sigmoid", "leaky_relu"})
 _VALID_NN_CANDLE_LOSSES = frozenset({"mse", "huber"})
@@ -353,6 +354,9 @@ class AnalysisConfig:
     min_signal_confidence: float
     min_risk_reward: float
     min_expected_move_pct: float
+    signal_decision_mode: str = "argmax"
+    min_directional_prob: float = 0.35
+    min_directional_ratio: float = 1.5
 
 
 @dataclass(frozen=True)
@@ -1061,7 +1065,16 @@ def parse_asset_dict(
     a_raw = _expect_dict(_require_key(obj, "analysis", section), a_sec)
     _reject_unknown_keys(
         a_raw,
-        frozenset({"min_signal_confidence", "min_risk_reward", "min_expected_move_pct"}),
+        frozenset(
+            {
+                "min_signal_confidence",
+                "min_risk_reward",
+                "min_expected_move_pct",
+                "signal_decision_mode",
+                "min_directional_prob",
+                "min_directional_ratio",
+            }
+        ),
         a_sec,
     )
     analysis = AnalysisConfig(
@@ -1080,6 +1093,22 @@ def parse_asset_dict(
             _require_key(a_raw, "min_expected_move_pct", a_sec),
             f"{a_sec}.min_expected_move_pct",
             min_value=0.0,
+        ),
+        signal_decision_mode=_expect_enum(
+            a_raw.get("signal_decision_mode", "argmax"),
+            f"{a_sec}.signal_decision_mode",
+            _VALID_SIGNAL_DECISION_MODES,
+        ),
+        min_directional_prob=_expect_float(
+            a_raw.get("min_directional_prob", 0.35),
+            f"{a_sec}.min_directional_prob",
+            exclusive_min=0.0,
+            max_value=1.0,
+        ),
+        min_directional_ratio=_expect_float(
+            a_raw.get("min_directional_ratio", 1.5),
+            f"{a_sec}.min_directional_ratio",
+            min_value=1.0,
         ),
     )
 

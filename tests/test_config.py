@@ -53,16 +53,22 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1h.features.triple_barrier.take_profit_atr, 1.5)
         self.assertEqual(btc_1h.features.triple_barrier.stop_loss_atr, 1.0)
         self.assertTrue(btc_1h.neural_networks.signal_classifier.enabled)
+        self.assertEqual(btc_1h.analysis.signal_decision_mode, "directional_edge")
+        self.assertAlmostEqual(btc_1h.analysis.min_directional_prob, 0.35)
+        self.assertAlmostEqual(btc_1h.analysis.min_directional_ratio, 1.5)
         self.assertEqual(btc_1h.alerts.consecutive_candles, 2)
         self.assertEqual(btc_1h.alerts.cooldown_candles, 5)
         self.assertEqual(btc_1h.alerts.actions, ("LONG", "SHORT"))
         self.assertEqual(btc_1h.training.hidden_layers, (64, 32))
         self.assertEqual(btc_1h.training.hidden_activation, "leaky_relu")
         self.assertEqual(btc_1h.training.candle_loss, "huber")
-        self.assertAlmostEqual(btc_1h.training.weight_decay, 0.001)
-        self.assertAlmostEqual(btc_1h.training.dropout_rate, 0.2)
+        self.assertEqual(btc_1h.training.epochs, 80)
+        self.assertAlmostEqual(btc_1h.training.learning_rate, 0.0004)
+        self.assertAlmostEqual(btc_1h.training.min_learning_rate, 0.00004)
+        self.assertAlmostEqual(btc_1h.training.weight_decay, 0.01)
+        self.assertAlmostEqual(btc_1h.training.dropout_rate, 0.3)
         self.assertEqual(btc_1h.training.lr_schedule, "cosine")
-        self.assertEqual(btc_1h.training.early_stopping_patience, 25)
+        self.assertEqual(btc_1h.training.early_stopping_patience, 20)
 
         btc_4h = cfg.get_asset("btc_4h")
         self.assertTrue(btc_4h.enabled)
@@ -75,6 +81,8 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertTrue(btc_4h.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8082)
         self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8083)
+        self.assertEqual(btc_4h.analysis.signal_decision_mode, "directional_edge")
+        self.assertAlmostEqual(btc_4h.training.weight_decay, 0.015)
 
         btc_1d = cfg.get_asset("btc_1d")
         self.assertTrue(btc_1d.enabled)
@@ -87,9 +95,12 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertTrue(btc_1d.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8084)
         self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8085)
+        self.assertEqual(btc_1d.analysis.signal_decision_mode, "directional_edge")
         self.assertEqual(btc_1d.training.hidden_layers, (32, 16))
         self.assertEqual(btc_1d.training.batch_size, 32)
-        self.assertAlmostEqual(btc_1d.training.dropout_rate, 0.25)
+        self.assertAlmostEqual(btc_1d.training.weight_decay, 0.02)
+        self.assertAlmostEqual(btc_1d.training.dropout_rate, 0.3)
+        self.assertEqual(btc_1d.training.early_stopping_patience, 25)
 
         # Reject invalid root-slash export paths
         for bad_export in ({"model_save_dir": "/"}, {"dataset_path_prefix": "/"}, {"report_dir": "/"}):
@@ -277,6 +288,31 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             raw_tb["features"]["triple_barrier"] = bad_tb
             with self.assertRaises(ConfigError):
                 parse_asset_dict(raw_tb, base_dir=self.asset_dir)
+
+        # Analysis directional_edge validation & backwards-compatible argmax defaults
+        for bad_an in (
+            {"signal_decision_mode": "voting"},
+            {"min_directional_prob": 0.0},
+            {"min_directional_prob": 1.2},
+            {"min_directional_prob": True},
+            {"min_directional_ratio": 0.9},
+            {"min_directional_ratio": False},
+        ):
+            raw_an = copy.deepcopy(self.asset_raw)
+            raw_an["analysis"] = {**raw_an["analysis"], **bad_an}
+            with self.assertRaises(ConfigError):
+                parse_asset_dict(raw_an, base_dir=self.asset_dir)
+
+        raw_legacy_an = copy.deepcopy(self.asset_raw)
+        raw_legacy_an["analysis"] = {
+            "min_signal_confidence": 0.55,
+            "min_risk_reward": 1.5,
+            "min_expected_move_pct": 0.005,
+        }
+        parsed_legacy = parse_asset_dict(raw_legacy_an, base_dir=self.asset_dir)
+        self.assertEqual(parsed_legacy.analysis.signal_decision_mode, "argmax")
+        self.assertAlmostEqual(parsed_legacy.analysis.min_directional_prob, 0.35)
+        self.assertAlmostEqual(parsed_legacy.analysis.min_directional_ratio, 1.5)
 
         # Per-asset training section validation (libnn v0.7.0 constraints)
         for bad_tr in (
