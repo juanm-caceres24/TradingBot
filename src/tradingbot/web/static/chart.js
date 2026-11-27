@@ -222,7 +222,7 @@
         const c = win.realSlice[slotIdx];
         const indSnap = {};
         for (const [id, cols] of Object.entries(this.indicators)) {
-          if (this.hiddenIndicators.has(id)) continue;
+          if (this.indicatorPlots[id] === "none" || this.hiddenIndicators.has(id)) continue;
           indSnap[id] = {};
           for (const [col, arr] of Object.entries(cols)) {
             indSnap[id][col] = arr[absIdx];

@@ -107,8 +107,8 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
             base = 0.30 * step
             bullish_rel.extend([base - 0.05, base + 0.35, base - 0.15, base + 0.12])
 
-        srv_c, th_c, port_c = _make_mock_nn_server(264, bullish_rel, latency_us=10)
-        srv_s, th_s, port_s = _make_mock_nn_server(264, [0.05, 0.85, 0.10], latency_us=6)
+        srv_c, th_c, port_c = _make_mock_nn_server(384, bullish_rel, latency_us=10)
+        srv_s, th_s, port_s = _make_mock_nn_server(384, [0.05, 0.85, 0.10], latency_us=6)
 
         try:
             start_ms = parse_iso_to_ms("2025-01-01T00:00:00Z")

@@ -79,16 +79,17 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
         asset = load_asset_config(BTC_1H_ASSET_PATH)
         pipeline = FeaturePipeline(asset)
 
-        # btc_1h indicators: ema_20 (19), ema_55 (54), sma_200 (199), rsi_14 (14), squeeze_20 (38)
+        # btc_1h indicators: ema_20 (19), ema_55 (54), sma_200 (199), rsi_14 (14),
+        # squeeze_20 (38), vol_regime (113), htf_4h (140) -> max_warmup remains 199
         self.assertEqual(pipeline.max_warmup, 199)
-        # 5 base OHLCV + (ema20=1, ema55=1, sma200=1, rsi=1, squeeze=2) = 11 features/bar * 24 = 264
+        # 5 base OHLCV + (ema20=1, ema55=1, sma200=1, rsi=1, squeeze=2, vol_regime=2, htf_4h=3) = 16/bar * 24 = 384
         schema_c = pipeline.build_schema("candles")
-        self.assertEqual(len(schema_c.per_bar_features), 11)
-        self.assertEqual(schema_c.input_size, 264)
+        self.assertEqual(len(schema_c.per_bar_features), 16)
+        self.assertEqual(schema_c.input_size, 384)
         self.assertEqual(schema_c.output_size, 24)  # 6 * 4
 
         schema_s = pipeline.build_schema("signal")
-        self.assertEqual(schema_s.input_size, 264)
+        self.assertEqual(schema_s.input_size, 384)
         self.assertEqual(schema_s.output_size, 3)
 
         # Strictly reject insufficient bars (max_warmup + input_window = 199 + 24 = 223 required)
@@ -98,12 +99,12 @@ class TestFeaturePipelineAndSchema(unittest.TestCase):
 
         bars_223 = _make_synthetic_bars(223)
         ctx = pipeline.build_latest_inference_window(bars_223)
-        self.assertEqual(len(ctx.vector), 264)
+        self.assertEqual(len(ctx.vector), 384)
         self.assertIsNotNone(ctx.atr)
         self.assertTrue(all(math.isfinite(v) for v in ctx.vector))
         # Anchor candle itself has close_rel == 0.0 (anchor_close - anchor_close) / scale
-        # Last bar's close_rel is at index -11 + 3 = -8
-        self.assertAlmostEqual(ctx.vector[-8], 0.0, places=9)
+        # Last bar's close_rel is at index -16 + 3 = -13
+        self.assertAlmostEqual(ctx.vector[-13], 0.0, places=9)
 
         # Earlier anchor overlapping warmup must return None
         self.assertIsNone(pipeline.build_input_window(bars_223, 221))
@@ -248,20 +249,20 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             )
             # Total=292, first_anchor = 199 + 24 - 1 = 222, last_anchor_excl = 292 - 6 = 286 -> 64 samples
             self.assertEqual(sum_c.samples_written, 64)
-            self.assertEqual(sum_c.input_size, 264)
+            self.assertEqual(sum_c.input_size, 384)
             self.assertEqual(sum_c.output_size, 24)
             self.assertEqual(sum_c.report_path, "reports/btc_1h_candles_report.json")
 
             lines = sum_c.csv_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 1 + 64)  # header + 64 rows
             header = lines[0].split(",")
-            self.assertEqual(len(header), 264 + 24)
+            self.assertEqual(len(header), 384 + 24)
             first_row = [float(x) for x in lines[1].split(",")]
-            self.assertEqual(len(first_row), 264 + 24)
+            self.assertEqual(len(first_row), 384 + 24)
             self.assertTrue(all(math.isfinite(x) for x in first_row))
 
             loaded_schema = load_feature_schema(sum_c.schema_path)
-            self.assertEqual(loaded_schema.input_size, 264)
+            self.assertEqual(loaded_schema.input_size, 384)
             self.assertEqual(loaded_schema.output_size, 24)
 
             nn_cfg_c = json.loads(sum_c.nn_config_path.read_text(encoding="utf-8"))
@@ -280,7 +281,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertEqual(nn_cfg_c["training"]["report_path"], "reports/btc_1h_candles_report.json")
             self.assertFalse(nn_cfg_c["training"]["validation_shuffle"])
             self.assertTrue(nn_cfg_c["training"]["keep_best_validation_model"])
-            self.assertEqual(nn_cfg_c["model"]["layers"][0], {"size": 264})
+            self.assertEqual(nn_cfg_c["model"]["layers"][0], {"size": 384})
             self.assertEqual(nn_cfg_c["model"]["layers"][1], {"size": 64, "activation": "leaky_relu"})
             self.assertEqual(nn_cfg_c["model"]["layers"][-1], {"size": 24, "activation": "linear"})
             self.assertEqual(nn_cfg_c["server"]["port"], 8080)

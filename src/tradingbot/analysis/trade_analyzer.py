@@ -20,6 +20,10 @@ class TradeAnalyzer:
             raise ValueError(
                 f"Unsupported signal_decision_mode: {analysis_config.signal_decision_mode!r}"
             )
+        if analysis_config.tp_sl_source not in ("candles", "triple_barrier"):
+            raise ValueError(
+                f"Unsupported tp_sl_source: {analysis_config.tp_sl_source!r}"
+            )
         self._cfg = analysis_config
         self._tb = triple_barrier
 
@@ -265,9 +269,14 @@ class TradeAnalyzer:
                         f"below threshold {self._cfg.min_expected_move_pct:.2%}"
                     ),
                 )
-            tp, sl, rr = self._compute_candle_levels(
-                candle_dir, anchor_close, predicted_candles, anchor_atr=anchor_atr
-            )
+            if self._cfg.tp_sl_source == "triple_barrier":
+                tp, sl, rr, _ = self._compute_triple_barrier_levels(
+                    candle_dir, anchor_close, anchor_atr=anchor_atr
+                )
+            else:
+                tp, sl, rr = self._compute_candle_levels(
+                    candle_dir, anchor_close, predicted_candles, anchor_atr=anchor_atr
+                )
             consistency = self._directional_consistency(candle_dir, anchor_close, predicted_candles)
             rr_factor = min(1.0, (rr or 0.0) / max(self._cfg.min_risk_reward, 1e-6))
             heuristic_conf = round(max(0.0, min(1.0, 0.6 * consistency + 0.4 * rr_factor)), 4)
@@ -316,6 +325,64 @@ class TradeAnalyzer:
                 ),
             )
 
+        dual_sig_tag = (
+            f"signal={sig_prob:.1%}"
+            if self._cfg.signal_decision_mode == "argmax"
+            else accept_detail
+        )
+
+        # Optional signal-driven mode: keep predicted candles visible on chart without vetoing signal
+        if not self._cfg.require_candle_confirmation:
+            tb_tp, tb_sl, tb_rr, tb_signed_move = self._compute_triple_barrier_levels(
+                sig_act, anchor_close, anchor_atr=anchor_atr
+            )
+            if self._cfg.tp_sl_source == "triple_barrier":
+                tp, sl, rr = tb_tp, tb_sl, tb_rr
+                rr_label = f"TB R:R={rr:.2f}"
+            else:
+                tp, sl, rr = self._compute_candle_levels(
+                    sig_act, anchor_close, predicted_candles, anchor_atr=anchor_atr
+                )
+                rr_label = f"R:R={rr:.2f}"
+            if abs(tb_signed_move) < self._cfg.min_expected_move_pct:
+                return TradeAnalysis(
+                    action="HOLD",
+                    expected_move_pct=round(tb_signed_move, 6),
+                    estimated_tp=tp,
+                    estimated_sl=sl,
+                    risk_reward=rr,
+                    confidence=round(sig_prob, 4),
+                    reason=(
+                        f"Signal-driven {sig_act} filtered by expected move "
+                        f"({tb_signed_move:+.2%} < {self._cfg.min_expected_move_pct:.2%})"
+                    ),
+                )
+            if rr is not None and rr < self._cfg.min_risk_reward:
+                return TradeAnalysis(
+                    action="HOLD",
+                    expected_move_pct=round(tb_signed_move, 6),
+                    estimated_tp=tp,
+                    estimated_sl=sl,
+                    risk_reward=rr,
+                    confidence=round(sig_prob, 4),
+                    reason=(
+                        f"Signal-driven {sig_act} filtered by R:R "
+                        f"({rr:.2f} < {self._cfg.min_risk_reward:.2f})"
+                    ),
+                )
+            return TradeAnalysis(
+                action=sig_act,
+                expected_move_pct=round(tb_signed_move, 6),
+                estimated_tp=tp,
+                estimated_sl=sl,
+                risk_reward=rr,
+                confidence=round(sig_prob, 4),
+                reason=(
+                    f"Signal-driven {sig_act}: {dual_sig_tag}, {rr_label} "
+                    f"(candle_forecast={expected_move_pct:+.2%})"
+                ),
+            )
+
         # Reject active directional contradiction or flat forecast below threshold
         if (sig_act == "LONG" and expected_move_pct < 0.0) or (
             sig_act == "SHORT" and expected_move_pct > 0.0
@@ -347,9 +414,16 @@ class TradeAnalyzer:
                 ),
             )
 
-        tp, sl, rr = self._compute_candle_levels(
-            sig_act, anchor_close, predicted_candles, anchor_atr=anchor_atr
-        )
+        if self._cfg.tp_sl_source == "triple_barrier":
+            tp, sl, rr, _ = self._compute_triple_barrier_levels(
+                sig_act, anchor_close, anchor_atr=anchor_atr
+            )
+            rr_label = f"TB R:R={rr:.2f}"
+        else:
+            tp, sl, rr = self._compute_candle_levels(
+                sig_act, anchor_close, predicted_candles, anchor_atr=anchor_atr
+            )
+            rr_label = f"R:R={rr:.2f}"
         if rr is not None and rr < self._cfg.min_risk_reward:
             return TradeAnalysis(
                 action="HOLD",
@@ -364,11 +438,6 @@ class TradeAnalyzer:
                 ),
             )
 
-        dual_sig_tag = (
-            f"signal={sig_prob:.1%}"
-            if self._cfg.signal_decision_mode == "argmax"
-            else accept_detail
-        )
         return TradeAnalysis(
             action=sig_act,
             expected_move_pct=round(expected_move_pct, 6),
@@ -378,6 +447,6 @@ class TradeAnalyzer:
             confidence=round(sig_prob, 4),
             reason=(
                 f"Cross-confirmed {sig_act}: {dual_sig_tag}, "
-                f"forecast={expected_move_pct:+.2%}, R:R={rr:.2f}"
+                f"forecast={expected_move_pct:+.2%}, {rr_label}"
             ),
         )

@@ -58,6 +58,30 @@
       },
       "use_in_nn": true,
       "plot": "subchart"
+    },
+    {
+      "id": "vol_regime",
+      "type": "volatility_regime",
+      "params": {
+        "fast_period": 14,
+        "slow_period": 100,
+        "rank_window": 100
+      },
+      "use_in_nn": true,
+      "plot": "none"
+    },
+    {
+      "id": "htf_1w",
+      "type": "htf_context",
+      "params": {
+        "base_timeframe": "1d",
+        "htf_timeframe": "1w",
+        "ema_fast": 8,
+        "ema_slow": 21,
+        "rsi_period": 14
+      },
+      "use_in_nn": true,
+      "plot": "none"
     }
   ],
   "features": {
@@ -92,18 +116,20 @@
   "analysis": {
     "signal_decision_mode": "directional_edge",
     "min_signal_confidence": 0.55,
-    "min_directional_prob": 0.35,
-    "min_directional_ratio": 1.5,
+    "min_directional_prob": 0.38,
+    "min_directional_ratio": 1.6,
+    "tp_sl_source": "triple_barrier",
+    "require_candle_confirmation": true,
     "min_risk_reward": 1.5,
-    "min_expected_move_pct": 0.01
+    "min_expected_move_pct": 0.002
   },
   "alerts": {
     "enabled": true,
     "actions": ["LONG", "SHORT"],
-    "min_confidence": 0.42,
+    "min_confidence": 0.40,
     "min_risk_reward": 1.5,
-    "min_expected_move_pct": 0.01,
-    "consecutive_candles": 2,
+    "min_expected_move_pct": 0.002,
+    "consecutive_candles": 1,
     "cooldown_candles": 3
   },
   "training": {
@@ -114,10 +140,10 @@
     "optimizer": "adam",
     "epochs": 80,
     "batch_size": 32,
-    "learning_rate": 0.0004,
+    "learning_rate": 0.0003,
     "lr_schedule": "cosine",
-    "min_learning_rate": 0.00004,
-    "weight_decay": 0.02,
+    "min_learning_rate": 0.00003,
+    "weight_decay": 0.015,
     "dropout_rate": 0.3,
     "grad_clip_norm": 1.0,
     "validation_split": 0.2,

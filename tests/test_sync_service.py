@@ -43,6 +43,10 @@ def _make_synthetic_asset(
     raw["id"] = asset_id
     raw["market"]["symbol"] = symbol
     raw["market"]["timeframe"] = timeframe
+    if timeframe != "1h":
+        raw["indicators"] = [
+            ind for ind in raw["indicators"] if ind.get("type") != "htf_context"
+        ]
     raw["runtime"]["initial_history_from"] = initial_history_from
     raw["provider"] = {
         "preset_path": "../providers/synthetic.json",
@@ -259,6 +263,54 @@ class TestSyncService(unittest.TestCase):
         # Re-running same weekly backfill is a no-op
         rep2 = service.backfill_asset(weekly_asset, start_ms=mon_start, end_ms=mon_start + 5 * week_ms)
         self.assertEqual(rep2.chunks_fetched, 0)
+
+    def test_default_min_candles_uses_exact_indicator_engine_warmup(self) -> None:
+        from tradingbot.indicators import IndicatorEngine
+
+        raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
+        raw["provider"] = {"preset_path": "../providers/synthetic.json"}
+        # Remove sma_200 and configure volatility_regime (warmup 100) + 1h->1d htf_context (warmup (12-1)*24=264)
+        raw["indicators"] = [
+            {
+                "id": "vol_regime",
+                "type": "volatility_regime",
+                "params": {"fast_period": 10, "slow_period": 40, "rank_window": 60},
+                "use_in_nn": True,
+                "plot": "none",
+            },
+            {
+                "id": "htf_1d",
+                "type": "htf_context",
+                "params": {
+                    "base_timeframe": "1h",
+                    "htf_timeframe": "1d",
+                    "ema_fast": 5,
+                    "ema_slow": 12,
+                    "rsi_period": 10,
+                },
+                "use_in_nn": True,
+                "plot": "none",
+            },
+        ]
+        asset = parse_asset_dict(raw, base_dir=BTC_1H_ASSET_PATH.parent)
+        expected_warmup = IndicatorEngine(asset.indicators).max_warmup(nn_only=False)
+        self.assertEqual(expected_warmup, 264)
+        self.assertEqual(
+            SyncService.default_min_candles_for_asset(asset),
+            expected_warmup + asset.features.input_window + asset.features.forecast_horizon + 50,
+        )
+
+        # Short-warmup indicator with larger features.atr_period still respects atr_period
+        raw_atr = copy.deepcopy(raw)
+        raw_atr["indicators"] = [
+            {"id": "ema_5", "type": "ema", "params": {"period": 5}, "use_in_nn": True, "plot": "overlay"}
+        ]
+        raw_atr["features"]["atr_period"] = 30
+        asset_atr = parse_asset_dict(raw_atr, base_dir=BTC_1H_ASSET_PATH.parent)
+        self.assertEqual(
+            SyncService.default_min_candles_for_asset(asset_atr),
+            30 + asset_atr.features.input_window + asset_atr.features.forecast_horizon + 50,
+        )
 
 
 class TestBackfillAppCLI(unittest.TestCase):

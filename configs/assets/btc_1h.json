@@ -58,6 +58,30 @@
       },
       "use_in_nn": true,
       "plot": "subchart"
+    },
+    {
+      "id": "vol_regime",
+      "type": "volatility_regime",
+      "params": {
+        "fast_period": 14,
+        "slow_period": 100,
+        "rank_window": 100
+      },
+      "use_in_nn": true,
+      "plot": "none"
+    },
+    {
+      "id": "htf_4h",
+      "type": "htf_context",
+      "params": {
+        "base_timeframe": "1h",
+        "htf_timeframe": "4h",
+        "ema_fast": 12,
+        "ema_slow": 36,
+        "rsi_period": 14
+      },
+      "use_in_nn": true,
+      "plot": "none"
     }
   ],
   "features": {
@@ -92,17 +116,19 @@
   "analysis": {
     "signal_decision_mode": "directional_edge",
     "min_signal_confidence": 0.55,
-    "min_directional_prob": 0.35,
-    "min_directional_ratio": 1.5,
+    "min_directional_prob": 0.40,
+    "min_directional_ratio": 1.8,
+    "tp_sl_source": "triple_barrier",
+    "require_candle_confirmation": false,
     "min_risk_reward": 1.5,
-    "min_expected_move_pct": 0.003
+    "min_expected_move_pct": 0.0005
   },
   "alerts": {
     "enabled": true,
     "actions": ["LONG", "SHORT"],
-    "min_confidence": 0.40,
+    "min_confidence": 0.44,
     "min_risk_reward": 1.5,
-    "min_expected_move_pct": 0.003,
+    "min_expected_move_pct": 0.0005,
     "consecutive_candles": 2,
     "cooldown_candles": 5
   },
