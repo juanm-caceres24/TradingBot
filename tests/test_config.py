@@ -36,6 +36,7 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(cfg.export.output_dir, "data/exports")
         self.assertEqual(cfg.export.dataset_path_prefix, "data")
         self.assertEqual(cfg.export.model_save_dir, "models")
+        self.assertEqual(cfg.export.report_dir, "reports")
         self.assertEqual(cfg.web.visible_candles, 70)
         self.assertTrue(cfg.notifications.api_enabled)
         self.assertEqual(len(cfg.assets), 3)
@@ -55,6 +56,13 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1h.alerts.consecutive_candles, 2)
         self.assertEqual(btc_1h.alerts.cooldown_candles, 5)
         self.assertEqual(btc_1h.alerts.actions, ("LONG", "SHORT"))
+        self.assertEqual(btc_1h.training.hidden_layers, (64, 32))
+        self.assertEqual(btc_1h.training.hidden_activation, "leaky_relu")
+        self.assertEqual(btc_1h.training.candle_loss, "huber")
+        self.assertAlmostEqual(btc_1h.training.weight_decay, 0.001)
+        self.assertAlmostEqual(btc_1h.training.dropout_rate, 0.2)
+        self.assertEqual(btc_1h.training.lr_schedule, "cosine")
+        self.assertEqual(btc_1h.training.early_stopping_patience, 25)
 
         btc_4h = cfg.get_asset("btc_4h")
         self.assertTrue(btc_4h.enabled)
@@ -79,9 +87,12 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertTrue(btc_1d.neural_networks.signal_classifier.enabled)
         self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8084)
         self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8085)
+        self.assertEqual(btc_1d.training.hidden_layers, (32, 16))
+        self.assertEqual(btc_1d.training.batch_size, 32)
+        self.assertAlmostEqual(btc_1d.training.dropout_rate, 0.25)
 
         # Reject invalid root-slash export paths
-        for bad_export in ({"model_save_dir": "/"}, {"dataset_path_prefix": "/"}):
+        for bad_export in ({"model_save_dir": "/"}, {"dataset_path_prefix": "/"}, {"report_dir": "/"}):
             raw_exp = copy.deepcopy(self.bot_raw)
             raw_exp["export"] = {**raw_exp["export"], **bad_export}
             with self.assertRaises(ConfigError):
@@ -207,6 +218,7 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             ["neural_networks", "candle_predictor", "extra"],
             ["analysis", "extra"],
             ["alerts", "extra"],
+            ["training", "extra"],
         ):
             with self.subTest(asset_path=path):
                 raw = copy.deepcopy(self.asset_raw)
@@ -265,6 +277,30 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             raw_tb["features"]["triple_barrier"] = bad_tb
             with self.assertRaises(ConfigError):
                 parse_asset_dict(raw_tb, base_dir=self.asset_dir)
+
+        # Per-asset training section validation (libnn v0.7.0 constraints)
+        for bad_tr in (
+            {"early_stopping_patience": 10, "validation_split": 0.0},
+            {"learning_rate": 0.001, "min_learning_rate": 0.005},
+            {"dropout_rate": 1.0},
+            {"candle_loss": "cce"},
+            {"huber_delta": 0.0},
+            {"weight_decay": -0.01},
+            {"grad_clip_norm": -1.0},
+            {"lr_schedule": "linear"},
+            {"hidden_layers": [64, 0]},
+        ):
+            raw_tr = copy.deepcopy(self.asset_raw)
+            raw_tr["training"] = bad_tr
+            with self.assertRaises(ConfigError):
+                parse_asset_dict(raw_tr, base_dir=self.asset_dir)
+
+        # Omitting optional training section falls back cleanly to defaults
+        raw_no_tr = copy.deepcopy(self.asset_raw)
+        raw_no_tr.pop("training", None)
+        parsed_no_tr = parse_asset_dict(raw_no_tr, base_dir=self.asset_dir)
+        self.assertEqual(parsed_no_tr.training.candle_loss, "mse")
+        self.assertEqual(parsed_no_tr.training.early_stopping_patience, 0)
 
     def test_custom_registered_indicator_accepted_by_json_config(self) -> None:
         from tradingbot.indicators import BaseIndicator, INDICATOR_REGISTRY, register_indicator

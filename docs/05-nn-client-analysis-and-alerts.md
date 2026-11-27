@@ -4,7 +4,7 @@ This document describes the HTTP inference client (`src/tradingbot/nn_client/`),
 
 ---
 
-## 1. Companion `NeuralNetwork` v0.6.0 HTTP Client (`src/tradingbot/nn_client/`)
+## 1. Companion `NeuralNetwork` v0.7.0 HTTP Client (`src/tradingbot/nn_client/`)
 
 `NeuralNetworkClient` communicates directly with `NeuralNetwork`'s `server_app` over HTTP/1.1 + JSON using only Python's standard library:
 

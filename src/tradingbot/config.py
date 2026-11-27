@@ -6,7 +6,7 @@ feature pipeline, dedicated/shared/disabled neural-network endpoints, and
 alerting rules, while sharing a single SQLite database, web dashboard, and
 outbound notification layer.
 
-Mirrors the strict schema discipline of NeuralNetwork (v0.6.0):
+Mirrors the strict schema discipline of NeuralNetwork (v0.7.0):
 - Zero hardcoded runtime parameters.
 - Unknown keys in any JSON section raise ConfigError immediately.
 - Strict type validation (booleans are never accepted as integers or floats).
@@ -38,6 +38,10 @@ _VALID_PLOT_MODES = frozenset({"overlay", "subchart", "none"})
 _VALID_NORMALIZATIONS = frozenset({"atr_relative", "pct_relative"})
 _VALID_TB_MODES = frozenset({"pct", "atr_multiple"})
 _VALID_ALERT_ACTIONS = frozenset({"LONG", "SHORT", "HOLD"})
+_VALID_NN_ACTIVATIONS = frozenset({"linear", "sigmoid", "tanh", "relu", "leaky_relu", "softmax"})
+_VALID_NN_CANDLE_LOSSES = frozenset({"mse", "huber"})
+_VALID_NN_OPTIMIZERS = frozenset({"sgd", "adam"})
+_VALID_NN_LR_SCHEDULES = frozenset({"none", "cosine"})
 
 
 def _valid_indicator_types() -> frozenset[str]:
@@ -236,6 +240,38 @@ class ExportConfig:
     output_dir: str = "data/exports"
     dataset_path_prefix: str = ""
     model_save_dir: str = "models"
+    report_dir: str = ""
+
+
+@dataclass(frozen=True)
+class NNTrainingConfig:
+    """Per-asset NeuralNetwork (libnn v0.7.0) training defaults for dataset export."""
+
+    hidden_layers: tuple[int, ...] = (128, 64)
+    hidden_activation: str = "relu"
+    candle_loss: str = "mse"
+    huber_delta: float = 1.0
+    optimizer: str = "adam"
+    epochs: int = 200
+    batch_size: int = 64
+    learning_rate: float = 0.001
+    lr_schedule: str = "none"
+    min_learning_rate: float = 0.0
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_epsilon: float = 1e-8
+    weight_decay: float = 0.0
+    dropout_rate: float = 0.0
+    grad_clip_norm: float = 0.0
+    validation_split: float = 0.2
+    early_stopping_patience: int = 0
+    early_stopping_min_delta: float = 0.0
+    num_threads: int = 4
+    init_seed: int = 42
+    seed: int = 100
+    log_every_epochs: int = 10
+    server_workers: int = 4
+    dataset_has_header: bool = True
 
 
 @dataclass(frozen=True)
@@ -368,6 +404,7 @@ class AssetConfig:
     neural_networks: NeuralNetworksConfig
     analysis: AnalysisConfig
     alerts: AlertRulesConfig
+    training: NNTrainingConfig = field(default_factory=NNTrainingConfig)
 
 
 @dataclass(frozen=True)
@@ -805,6 +842,7 @@ def parse_asset_dict(
                 "neural_networks",
                 "analysis",
                 "alerts",
+                "training",
             }
         ),
         section,
@@ -1051,6 +1089,13 @@ def parse_asset_dict(
         f"{section}.alerts",
     )
 
+    # training (optional per-asset libnn v0.7.0 training export defaults)
+    training = (
+        _parse_nn_training(obj["training"], f"{section}.training")
+        if "training" in obj
+        else NNTrainingConfig()
+    )
+
     return AssetConfig(
         id=asset_id,
         enabled=enabled,
@@ -1062,6 +1107,146 @@ def parse_asset_dict(
         neural_networks=neural_networks,
         analysis=analysis,
         alerts=alerts,
+        training=training,
+    )
+
+
+def _parse_nn_training(raw: Any, section: str) -> NNTrainingConfig:
+    obj = _expect_dict(raw, section)
+    _reject_unknown_keys(
+        obj,
+        frozenset(
+            {
+                "hidden_layers",
+                "hidden_activation",
+                "candle_loss",
+                "huber_delta",
+                "optimizer",
+                "epochs",
+                "batch_size",
+                "learning_rate",
+                "lr_schedule",
+                "min_learning_rate",
+                "adam_beta1",
+                "adam_beta2",
+                "adam_epsilon",
+                "weight_decay",
+                "dropout_rate",
+                "grad_clip_norm",
+                "validation_split",
+                "early_stopping_patience",
+                "early_stopping_min_delta",
+                "num_threads",
+                "init_seed",
+                "seed",
+                "log_every_epochs",
+                "server_workers",
+                "dataset_has_header",
+            }
+        ),
+        section,
+    )
+    if "hidden_layers" in obj:
+        raw_layers = _expect_list(obj["hidden_layers"], f"{section}.hidden_layers")
+        hidden_layers = tuple(
+            _expect_int(w, f"{section}.hidden_layers[{i}]", min_value=1)
+            for i, w in enumerate(raw_layers)
+        )
+    else:
+        hidden_layers = (128, 64)
+
+    learning_rate = _expect_float(
+        obj.get("learning_rate", 0.001), f"{section}.learning_rate", exclusive_min=0.0
+    )
+    min_learning_rate = _expect_float(
+        obj.get("min_learning_rate", 0.0), f"{section}.min_learning_rate", min_value=0.0
+    )
+    if min_learning_rate > learning_rate:
+        raise ConfigError(
+            f"'{section}.min_learning_rate' ({min_learning_rate}) must be <= learning_rate ({learning_rate})"
+        )
+
+    validation_split = _expect_float(
+        obj.get("validation_split", 0.2),
+        f"{section}.validation_split",
+        min_value=0.0,
+        exclusive_max=1.0,
+    )
+    early_stopping_patience = _expect_int(
+        obj.get("early_stopping_patience", 0),
+        f"{section}.early_stopping_patience",
+        min_value=0,
+    )
+    if early_stopping_patience > 0 and validation_split <= 0.0:
+        raise ConfigError(
+            f"'{section}.early_stopping_patience' requires validation_split > 0"
+        )
+
+    return NNTrainingConfig(
+        hidden_layers=hidden_layers,
+        hidden_activation=_expect_enum(
+            obj.get("hidden_activation", "relu"),
+            f"{section}.hidden_activation",
+            _VALID_NN_ACTIVATIONS,
+        ),
+        candle_loss=_expect_enum(
+            obj.get("candle_loss", "mse"),
+            f"{section}.candle_loss",
+            _VALID_NN_CANDLE_LOSSES,
+        ),
+        huber_delta=_expect_float(
+            obj.get("huber_delta", 1.0), f"{section}.huber_delta", exclusive_min=0.0
+        ),
+        optimizer=_expect_enum(
+            obj.get("optimizer", "adam"), f"{section}.optimizer", _VALID_NN_OPTIMIZERS
+        ),
+        epochs=_expect_int(obj.get("epochs", 200), f"{section}.epochs", min_value=1),
+        batch_size=_expect_int(obj.get("batch_size", 64), f"{section}.batch_size", min_value=1),
+        learning_rate=learning_rate,
+        lr_schedule=_expect_enum(
+            obj.get("lr_schedule", "none"), f"{section}.lr_schedule", _VALID_NN_LR_SCHEDULES
+        ),
+        min_learning_rate=min_learning_rate,
+        adam_beta1=_expect_float(
+            obj.get("adam_beta1", 0.9), f"{section}.adam_beta1", min_value=0.0, exclusive_max=1.0
+        ),
+        adam_beta2=_expect_float(
+            obj.get("adam_beta2", 0.999), f"{section}.adam_beta2", min_value=0.0, exclusive_max=1.0
+        ),
+        adam_epsilon=_expect_float(
+            obj.get("adam_epsilon", 1e-8), f"{section}.adam_epsilon", exclusive_min=0.0
+        ),
+        weight_decay=_expect_float(
+            obj.get("weight_decay", 0.0), f"{section}.weight_decay", min_value=0.0
+        ),
+        dropout_rate=_expect_float(
+            obj.get("dropout_rate", 0.0),
+            f"{section}.dropout_rate",
+            min_value=0.0,
+            exclusive_max=1.0,
+        ),
+        grad_clip_norm=_expect_float(
+            obj.get("grad_clip_norm", 0.0), f"{section}.grad_clip_norm", min_value=0.0
+        ),
+        validation_split=validation_split,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=_expect_float(
+            obj.get("early_stopping_min_delta", 0.0),
+            f"{section}.early_stopping_min_delta",
+            min_value=0.0,
+        ),
+        num_threads=_expect_int(obj.get("num_threads", 4), f"{section}.num_threads", min_value=1),
+        init_seed=_expect_int(obj.get("init_seed", 42), f"{section}.init_seed", min_value=0),
+        seed=_expect_int(obj.get("seed", 100), f"{section}.seed", min_value=0),
+        log_every_epochs=_expect_int(
+            obj.get("log_every_epochs", 10), f"{section}.log_every_epochs", min_value=0
+        ),
+        server_workers=_expect_int(
+            obj.get("server_workers", 4), f"{section}.server_workers", min_value=1
+        ),
+        dataset_has_header=_expect_bool(
+            obj.get("dataset_has_header", True), f"{section}.dataset_has_header"
+        ),
     )
 
 
@@ -1097,7 +1282,7 @@ def parse_config_dict(
         e_raw = _expect_dict(root["export"], "export")
         _reject_unknown_keys(
             e_raw,
-            frozenset({"output_dir", "dataset_path_prefix", "model_save_dir"}),
+            frozenset({"output_dir", "dataset_path_prefix", "model_save_dir", "report_dir"}),
             "export",
         )
         export_out_dir = _expect_str(
@@ -1115,10 +1300,18 @@ def parse_config_dict(
         )
         if not export_model_dir.strip().rstrip("/"):
             raise ConfigError("'export.model_save_dir' must be a valid non-empty directory path")
+        export_report_dir = _expect_str(
+            e_raw.get("report_dir", ""), "export.report_dir", allow_empty=True
+        )
+        if export_report_dir and not export_report_dir.strip().rstrip("/"):
+            raise ConfigError(
+                "'export.report_dir' must be empty or a valid non-root directory path"
+            )
         export_cfg = ExportConfig(
             output_dir=export_out_dir,
             dataset_path_prefix=export_ds_prefix,
             model_save_dir=export_model_dir,
+            report_dir=export_report_dir,
         )
     else:
         export_cfg = ExportConfig()

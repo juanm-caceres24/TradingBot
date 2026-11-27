@@ -1,4 +1,4 @@
-"""Dataset CSV exporter producing NeuralNetwork (libnn v0.6.0) training artifacts."""
+"""Dataset CSV exporter producing NeuralNetwork (libnn v0.7.0) training artifacts."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class ExportSummary:
     csv_path: Path
     schema_path: Path
     nn_config_path: Path
+    report_path: str = ""
     class_counts: dict[str, int] | None = None
 
 
@@ -44,9 +45,11 @@ def export_dataset(
     model_save_path: str | None = None,
     dataset_path_prefix: str = "",
     model_save_dir: str = "models",
+    report_path: str | None = None,
+    report_dir: str = "",
     training_options: NNTrainingOptions | None = None,
 ) -> ExportSummary:
-    """Export sliding-window CSV, feature_schema.json, and libnn nn_config.json."""
+    """Export sliding-window CSV, feature_schema.json, and libnn v0.7.0 nn_config.json."""
     if model_kind not in ("candles", "signal"):
         raise ValueError(f"Unsupported model_kind {model_kind!r}. Expected 'candles' or 'signal'.")
 
@@ -55,7 +58,11 @@ def export_dataset(
 
     pipeline = FeaturePipeline(asset)
     schema = pipeline.build_schema(model_kind)
-    opts = training_options if training_options is not None else NNTrainingOptions()
+    opts = (
+        training_options
+        if training_options is not None
+        else NNTrainingOptions.from_asset_config(asset.training)
+    )
 
     w = asset.features.input_window
     h = asset.features.forecast_horizon
@@ -80,6 +87,16 @@ def export_dataset(
             f"{clean_model_dir}/{asset.id}_{model_kind}.json"
             if clean_model_dir
             else f"{asset.id}_{model_kind}.json"
+        )
+    )
+    clean_report_dir = report_dir.strip().rstrip("/")
+    resolved_report_path = (
+        report_path
+        if report_path is not None
+        else (
+            f"{clean_report_dir}/{asset.id}_{model_kind}_report.json"
+            if clean_report_dir
+            else ""
         )
     )
 
@@ -123,6 +140,7 @@ def export_dataset(
         schema,
         dataset_path=nn_dataset_path,
         model_save_path=resolved_model_save,
+        report_path=resolved_report_path,
         options=opts,
     )
     save_nn_config(nn_cfg, resolved_nn_cfg)
@@ -137,5 +155,6 @@ def export_dataset(
         csv_path=resolved_csv,
         schema_path=resolved_schema,
         nn_config_path=resolved_nn_cfg,
+        report_path=resolved_report_path,
         class_counts=class_counts,
     )
