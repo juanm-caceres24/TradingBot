@@ -1399,10 +1399,8 @@ def parse_config_dict(
         "notifications",
     )
 
-    # assets
+    # assets (empty list is allowed so fresh installs can boot without configured assets)
     assets_raw = _expect_list(_require_key(root, "assets", "root"), "assets")
-    if not assets_raw:
-        raise ConfigError("'assets' must contain at least one asset configuration")
 
     assets: list[AssetConfig] = []
     seen_asset_ids: set[str] = set()
@@ -1427,3 +1425,236 @@ def load_config(path: str | Path) -> AppConfig:
     file_path = Path(path)
     raw = _load_json_file(file_path, "Configuration")
     return parse_config_dict(raw, base_dir=file_path.parent)
+
+
+DEFAULT_CONFIG_PATH = Path("configs/bot.json")
+DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "templates" / "configs"
+
+_FALLBACK_BOT_CONFIG: dict[str, Any] = {
+    "storage": {
+        "db_path": "data/market.db",
+        "wal_mode": True,
+        "busy_timeout_ms": 5000,
+    },
+    "export": {
+        "output_dir": "data/exports",
+        "dataset_path_prefix": "data",
+        "model_save_dir": "models",
+        "report_dir": "reports",
+    },
+    "web": {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": 8000,
+        "visible_candles": 70,
+        "title": "TradingBot Dashboard",
+    },
+    "notifications": {
+        "api_enabled": True,
+        "webhooks": [],
+    },
+    "assets": [],
+}
+
+_FALLBACK_SYNTHETIC_PRESET: dict[str, Any] = {
+    "name": "synthetic",
+    "type": "synthetic",
+    "max_candles_per_request": 1000,
+    "synthetic": {
+        "seed": 42,
+        "base_price": 50000.0,
+        "volatility": 0.008,
+        "drift": 0.0001,
+        "base_volume": 120.0,
+    },
+}
+
+_FALLBACK_BINANCE_PRESET: dict[str, Any] = {
+    "name": "binance_spot",
+    "type": "generic_rest",
+    "base_url": "https://api.binance.com",
+    "endpoint": "/api/v3/klines",
+    "http_method": "GET",
+    "timeout_sec": 10.0,
+    "rate_limit_ms": 200,
+    "max_candles_per_request": 1000,
+    "params_map": {
+        "symbol": "symbol",
+        "interval": "interval",
+        "start_time": "startTime",
+        "end_time": "endTime",
+        "limit": "limit",
+    },
+    "interval_map": {
+        "1m": "1m",
+        "3m": "3m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1h",
+        "2h": "2h",
+        "4h": "4h",
+        "6h": "6h",
+        "8h": "8h",
+        "12h": "12h",
+        "1d": "1d",
+        "3d": "3d",
+        "1w": "1w",
+    },
+    "response_mapping": {
+        "data_path": "",
+        "format": "array_of_arrays",
+        "fields": {
+            "open_time": 0,
+            "open": 1,
+            "high": 2,
+            "low": 3,
+            "close": 4,
+            "volume": 5,
+            "close_time": 6,
+        },
+        "timestamp_unit": "ms",
+        "order": "asc",
+    },
+    "headers": {},
+    "api_key_env": "",
+    "api_key_header": "",
+}
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    """Summary returned when initializing local configuration files from defaults/templates."""
+
+    config_path: Path
+    created_files: tuple[Path, ...]
+    skipped_files: tuple[Path, ...]
+
+
+def _write_json_if_needed(
+    target: Path,
+    payload: str,
+    *,
+    force: bool,
+    created: list[Path],
+    skipped: list[Path],
+) -> None:
+    if target.exists() and not force:
+        skipped.append(target)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(payload, encoding="utf-8")
+    created.append(target)
+
+
+def bootstrap_default_config(
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    *,
+    templates_dir: str | Path | None = None,
+    with_demo: bool = False,
+    copy_example: bool = False,
+    force: bool = False,
+) -> BootstrapResult:
+    """Create minimal default local configuration files from templates without overwriting user configs."""
+    cfg_path = Path(config_path)
+    base_dir = cfg_path.parent
+    providers_dir = base_dir / "providers"
+    assets_dir = base_dir / "assets"
+    tpl_dir = Path(templates_dir) if templates_dir is not None else DEFAULT_TEMPLATES_DIR
+
+    providers_dir.mkdir(parents=True, exist_ok=True)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    created: list[Path] = []
+    skipped: list[Path] = []
+
+    # Copy generic provider presets (falling back to embedded JSON if templates_dir is unavailable)
+    for fname, fallback_obj in (
+        ("binance_spot.json", _FALLBACK_BINANCE_PRESET),
+        ("synthetic.json", _FALLBACK_SYNTHETIC_PRESET),
+    ):
+        tpl_file = tpl_dir / "providers" / fname
+        payload = (
+            tpl_file.read_text(encoding="utf-8")
+            if tpl_file.is_file()
+            else json.dumps(fallback_obj, indent=2) + "\n"
+        )
+        _write_json_if_needed(
+            providers_dir / fname,
+            payload,
+            force=force,
+            created=created,
+            skipped=skipped,
+        )
+
+    # Optional offline demo asset and/or reference example asset
+    if with_demo:
+        demo_tpl = tpl_dir / "assets" / "demo_synthetic.json"
+        if not demo_tpl.is_file():
+            raise ConfigError(f"Demo asset template not found at '{demo_tpl}'")
+        _write_json_if_needed(
+            assets_dir / "demo_synthetic.json",
+            demo_tpl.read_text(encoding="utf-8"),
+            force=force,
+            created=created,
+            skipped=skipped,
+        )
+
+    if copy_example:
+        ex_tpl = tpl_dir / "assets" / "example_asset.json"
+        if not ex_tpl.is_file():
+            raise ConfigError(f"Example asset template not found at '{ex_tpl}'")
+        _write_json_if_needed(
+            assets_dir / "example_asset.json",
+            ex_tpl.read_text(encoding="utf-8"),
+            force=force,
+            created=created,
+            skipped=skipped,
+        )
+
+    # Minimal root bot.json (0 assets by default, or demo_synthetic when with_demo=True)
+    bot_tpl = tpl_dir / "bot.json"
+    bot_obj = (
+        json.loads(bot_tpl.read_text(encoding="utf-8"))
+        if bot_tpl.is_file()
+        else json.loads(json.dumps(_FALLBACK_BOT_CONFIG))
+    )
+    if with_demo:
+        bot_obj["assets"] = [{"config_path": "assets/demo_synthetic.json"}]
+    else:
+        bot_obj["assets"] = []
+
+    _write_json_if_needed(
+        cfg_path,
+        json.dumps(bot_obj, indent=2) + "\n",
+        force=force,
+        created=created,
+        skipped=skipped,
+    )
+
+    return BootstrapResult(
+        config_path=cfg_path,
+        created_files=tuple(created),
+        skipped_files=tuple(skipped),
+    )
+
+
+def ensure_default_config(
+    config_path: str | Path,
+    *,
+    default_path: str | Path = DEFAULT_CONFIG_PATH,
+    templates_dir: str | Path | None = None,
+) -> BootstrapResult | None:
+    """Auto-create minimal default config ONLY when targeting the default path on a fresh setup."""
+    target = Path(config_path)
+    if target.exists():
+        return None
+    if target.resolve() != Path(default_path).resolve():
+        return None
+    return bootstrap_default_config(
+        target,
+        templates_dir=templates_dir,
+        with_demo=False,
+        copy_example=False,
+        force=False,
+    )

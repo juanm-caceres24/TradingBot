@@ -22,8 +22,8 @@ from tradingbot.providers import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BINANCE_PRESET = ROOT_DIR / "configs" / "providers" / "binance_spot.json"
-SYNTHETIC_PRESET = ROOT_DIR / "configs" / "providers" / "synthetic.json"
+BINANCE_PRESET = ROOT_DIR / "templates" / "configs" / "providers" / "binance_spot.json"
+SYNTHETIC_PRESET = ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json"
 HOUR_MS = 3_600_000
 
 

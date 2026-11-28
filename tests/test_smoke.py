@@ -23,8 +23,8 @@ class TestProjectSmoke(unittest.TestCase):
         self.assertEqual(tradingbot.__version__, match.group(1))
 
     def test_all_config_files_are_valid_json(self) -> None:
-        config_files = sorted((ROOT_DIR / "configs").rglob("*.json"))
-        self.assertGreaterEqual(len(config_files), 3)
+        config_files = sorted((ROOT_DIR / "templates" / "configs").rglob("*.json"))
+        self.assertGreaterEqual(len(config_files), 5)
         for path in config_files:
             with self.subTest(path=str(path)):
                 data = json.loads(path.read_text(encoding="utf-8"))

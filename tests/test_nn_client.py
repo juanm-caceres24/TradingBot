@@ -21,7 +21,7 @@ from tradingbot.nn_client import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
 
 
 def _make_mock_nn_server(

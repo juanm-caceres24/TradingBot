@@ -57,8 +57,9 @@ Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp 
 ## 4. Running on a 24/7 Server over LAN / Tailscale
 
 ```bash
-# Bind to all interfaces (LAN + Tailscale) on port 8000 (from configs/bot.json)
-./scripts/live.sh configs/bot.json
+# Bind to all interfaces (LAN + Tailscale) on port 8000 (defaults to configs/bot.json;
+# auto-creates minimal defaults if configs/ does not exist yet, and boots cleanly with 0 assets)
+./scripts/live.sh
 
 # Or bind strictly to your Tailscale IP (recommended for private remote access)
 ./scripts/live.sh configs/bot.json --web-host 100.x.y.z --web-port 8000

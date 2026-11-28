@@ -21,7 +21,7 @@ from tradingbot.storage import SQLiteCandleStore
 from test_nn_client import _make_mock_nn_server
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
 HOUR_MS = 3_600_000
 
 

@@ -35,7 +35,7 @@ from tradingbot.web.websocket import (
 from test_nn_client import _make_mock_nn_server
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
 HOUR_MS = 3_600_000
 
 
@@ -289,7 +289,7 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
             tmp_path = Path(tmp)
             asset_raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
             asset_raw["provider"] = {
-                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+                "preset_path": str((ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json").resolve())
             }
             asset_raw["runtime"]["poll_interval_sec"] = 0.05
             asset_raw["neural_networks"]["candle_predictor"]["enabled"] = False
@@ -329,6 +329,60 @@ class TestDashboardWebServerAndAPI(unittest.TestCase):
             out = buf.getvalue()
             self.assertIn("Web Dashboard listening on http://127.0.0.1:", out)
             self.assertIn("stopped cleanly after 1 poll cycle(s)", out)
+
+            # Empty assets: [] still starts Web Dashboard cleanly and serves /api/assets -> []
+            empty_bot_path = tmp_path / "empty_bot.json"
+            empty_bot_path.write_text(
+                json.dumps(
+                    {
+                        "storage": {"db_path": str(tmp_path / "empty.db"), "wal_mode": True, "busy_timeout_ms": 5000},
+                        "web": {"enabled": True, "host": "127.0.0.1", "port": 0, "visible_candles": 70},
+                        "notifications": {"api_enabled": True, "webhooks": []},
+                        "assets": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            buf_empty_web = io.StringIO()
+            with redirect_stdout(buf_empty_web):
+                rc_ew = live_app.main(
+                    [
+                        str(empty_bot_path),
+                        "--web-host",
+                        "127.0.0.1",
+                        "--web-port",
+                        "0",
+                        "--max-cycles",
+                        "1",
+                    ]
+                )
+            self.assertEqual(rc_ew, 0)
+            self.assertIn("Web Dashboard listening on http://127.0.0.1:", buf_empty_web.getvalue())
+            self.assertIn("0 active assets", buf_empty_web.getvalue())
+
+            buf_empty_hl = io.StringIO()
+            with redirect_stdout(buf_empty_hl):
+                rc_hl = live_app.main([str(empty_bot_path), "--headless"])
+            self.assertEqual(rc_hl, 0)
+            self.assertIn("No assets configured", buf_empty_hl.getvalue())
+
+            # Verify DashboardServer REST endpoints respond cleanly when 0 assets are configured
+            empty_cfg = parse_config_dict(
+                json.loads(empty_bot_path.read_text(encoding="utf-8")), base_dir=tmp_path
+            )
+            with SQLiteCandleStore(":memory:") as empty_store:
+                empty_orch = BotOrchestrator(empty_cfg, empty_store)
+                empty_srv = DashboardServer(empty_orch, host="127.0.0.1", port=0)
+                ehost, eport = empty_srv.start()
+                try:
+                    st_h, body_h = _http_json(f"http://{ehost}:{eport}/health")
+                    self.assertEqual(st_h, 200)
+                    self.assertEqual(body_h["assets_count"], 0)
+                    st_a, body_a = _http_json(f"http://{ehost}:{eport}/api/assets")
+                    self.assertEqual(st_a, 200)
+                    self.assertEqual(body_a["assets"], [])
+                finally:
+                    empty_srv.stop()
 
     def test_api_error_paths_disabled_alerts_cors_ws_backpressure_and_concurrency(self) -> None:
         # 1) WebSocketHub queue-full backpressure drops oldest frame cleanly

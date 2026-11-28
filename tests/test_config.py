@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from tradingbot.config import (
+    BootstrapResult,
     ConfigError,
+    bootstrap_default_config,
+    ensure_default_config,
     load_asset_config,
     load_config,
     load_provider_preset,
@@ -18,9 +24,11 @@ from tradingbot.config import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BOT_CONFIG_PATH = ROOT_DIR / "configs" / "bot.json"
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
-SYNTHETIC_PRESET_PATH = ROOT_DIR / "configs" / "providers" / "synthetic.json"
+BOT_CONFIG_PATH = ROOT_DIR / "templates" / "configs" / "bot.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
+DEMO_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "demo_synthetic.json"
+SYNTHETIC_PRESET_PATH = ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json"
+INIT_CONFIG_APP_PATH = ROOT_DIR / "apps" / "init_config_app.py"
 
 
 class TestMultiAssetConfigLoading(unittest.TestCase):
@@ -31,54 +39,27 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.asset_dir = BTC_1H_ASSET_PATH.parent
 
     def test_load_root_bot_config_with_multiple_assets(self) -> None:
-        cfg = load_config(BOT_CONFIG_PATH)
-        self.assertEqual(cfg.storage.db_path, "data/market.db")
-        self.assertEqual(cfg.export.output_dir, "data/exports")
-        self.assertEqual(cfg.export.dataset_path_prefix, "data")
-        self.assertEqual(cfg.export.model_save_dir, "models")
-        self.assertEqual(cfg.export.report_dir, "reports")
-        self.assertEqual(cfg.web.visible_candles, 70)
-        self.assertTrue(cfg.notifications.api_enabled)
-        self.assertEqual(len(cfg.assets), 4)
-        self.assertEqual(len(cfg.enabled_assets), 4)
+        # Minimal shipped template bot.json boots cleanly with 0 configured assets
+        empty_cfg = load_config(BOT_CONFIG_PATH)
+        self.assertEqual(empty_cfg.storage.db_path, "data/market.db")
+        self.assertEqual(empty_cfg.export.output_dir, "data/exports")
+        self.assertEqual(empty_cfg.export.dataset_path_prefix, "data")
+        self.assertEqual(empty_cfg.export.model_save_dir, "models")
+        self.assertEqual(empty_cfg.export.report_dir, "reports")
+        self.assertEqual(empty_cfg.web.visible_candles, 70)
+        self.assertTrue(empty_cfg.notifications.api_enabled)
+        self.assertEqual(len(empty_cfg.assets), 0)
+        self.assertEqual(len(empty_cfg.enabled_assets), 0)
 
-        btc_15m = cfg.get_asset("btc_15m")
-        self.assertTrue(btc_15m.enabled)
-        self.assertEqual(btc_15m.market.symbol, "BTCUSDT")
-        self.assertEqual(btc_15m.market.timeframe, "15m")
-        self.assertEqual(btc_15m.provider.name, "binance_spot")
-        self.assertEqual(btc_15m.features.input_window, 24)
-        self.assertEqual(btc_15m.features.forecast_horizon, 6)
-        self.assertEqual(btc_15m.features.stride, 2)
-        self.assertEqual(btc_15m.features.triple_barrier.mode, "atr_multiple")
-        self.assertEqual(btc_15m.features.triple_barrier.take_profit_atr, 1.5)
-        self.assertEqual(btc_15m.features.triple_barrier.stop_loss_atr, 1.0)
-        self.assertTrue(btc_15m.neural_networks.signal_classifier.enabled)
-        self.assertEqual(btc_15m.neural_networks.candle_predictor.port, 8086)
-        self.assertEqual(btc_15m.neural_networks.signal_classifier.port, 8087)
-        self.assertEqual(btc_15m.analysis.signal_decision_mode, "directional_edge")
-        self.assertEqual(btc_15m.analysis.tp_sl_source, "triple_barrier")
-        self.assertFalse(btc_15m.analysis.require_candle_confirmation)
-        self.assertAlmostEqual(btc_15m.analysis.min_directional_prob, 0.40)
-        self.assertAlmostEqual(btc_15m.analysis.min_directional_ratio, 1.8)
-        self.assertAlmostEqual(btc_15m.analysis.min_expected_move_pct, 0.002)
-        self.assertEqual(btc_15m.alerts.consecutive_candles, 2)
-        self.assertEqual(btc_15m.alerts.cooldown_candles, 6)
-        self.assertEqual(btc_15m.training.hidden_layers, (64, 32))
-        self.assertEqual(btc_15m.training.batch_size, 128)
-        self.assertAlmostEqual(btc_15m.training.learning_rate, 0.0005)
-        self.assertAlmostEqual(btc_15m.training.min_learning_rate, 0.00005)
-        self.assertAlmostEqual(btc_15m.training.weight_decay, 0.008)
-        self.assertAlmostEqual(btc_15m.training.dropout_rate, 0.25)
-        self.assertEqual(btc_15m.training.early_stopping_patience, 18)
-
-        from tradingbot.features import FeaturePipeline
-
-        btc_15m_pipe = FeaturePipeline(btc_15m)
-        self.assertEqual(btc_15m_pipe.max_warmup, 199)
-        self.assertEqual(btc_15m_pipe.build_schema("candles").input_size, 384)
-        self.assertEqual(btc_15m_pipe.build_schema("candles").output_size, 24)
-        self.assertEqual(btc_15m_pipe.build_schema("signal").output_size, 3)
+        # Multi-asset root config built from the shipped templates (example_asset + demo_synthetic)
+        multi_raw = copy.deepcopy(self.bot_raw)
+        multi_raw["assets"] = [
+            {"config_path": "assets/example_asset.json"},
+            {"config_path": "assets/demo_synthetic.json"},
+        ]
+        cfg = parse_config_dict(multi_raw, base_dir=self.bot_dir)
+        self.assertEqual(len(cfg.assets), 2)
+        self.assertEqual(len(cfg.enabled_assets), 2)
 
         btc_1h = cfg.get_asset("btc_1h")
         self.assertTrue(btc_1h.enabled)
@@ -110,47 +91,20 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         self.assertEqual(btc_1h.training.lr_schedule, "cosine")
         self.assertEqual(btc_1h.training.early_stopping_patience, 20)
 
-        btc_4h = cfg.get_asset("btc_4h")
-        self.assertTrue(btc_4h.enabled)
-        self.assertEqual(btc_4h.market.timeframe, "4h")
-        self.assertEqual(btc_4h.features.input_window, 24)
-        self.assertEqual(btc_4h.features.forecast_horizon, 6)
-        self.assertEqual(btc_4h.features.triple_barrier.mode, "atr_multiple")
-        self.assertEqual(btc_4h.features.triple_barrier.take_profit_atr, 1.5)
-        self.assertEqual(btc_4h.features.triple_barrier.stop_loss_atr, 1.0)
-        self.assertTrue(btc_4h.neural_networks.signal_classifier.enabled)
-        self.assertEqual(btc_4h.neural_networks.candle_predictor.port, 8082)
-        self.assertEqual(btc_4h.neural_networks.signal_classifier.port, 8083)
-        self.assertEqual(btc_4h.analysis.signal_decision_mode, "directional_edge")
-        self.assertFalse(btc_4h.analysis.require_candle_confirmation)
-        self.assertAlmostEqual(btc_4h.analysis.min_directional_prob, 0.40)
-        self.assertAlmostEqual(btc_4h.analysis.min_directional_ratio, 1.8)
-        self.assertAlmostEqual(btc_4h.training.weight_decay, 0.012)
-        self.assertAlmostEqual(btc_4h.training.dropout_rate, 0.25)
+        demo = cfg.get_asset("demo_synthetic_1h")
+        self.assertTrue(demo.enabled)
+        self.assertEqual(demo.provider.type, "synthetic")
+        self.assertEqual(demo.market.timeframe, "1h")
+        self.assertFalse(demo.neural_networks.candle_predictor.enabled)
+        self.assertFalse(demo.neural_networks.signal_classifier.enabled)
 
-        btc_1d = cfg.get_asset("btc_1d")
-        self.assertTrue(btc_1d.enabled)
-        self.assertEqual(btc_1d.market.timeframe, "1d")
-        self.assertEqual(btc_1d.features.input_window, 24)
-        self.assertEqual(btc_1d.features.forecast_horizon, 7)
-        self.assertEqual(btc_1d.features.triple_barrier.mode, "atr_multiple")
-        self.assertEqual(btc_1d.features.triple_barrier.take_profit_atr, 1.8)
-        self.assertEqual(btc_1d.features.triple_barrier.stop_loss_atr, 1.2)
-        self.assertTrue(btc_1d.neural_networks.signal_classifier.enabled)
-        self.assertEqual(btc_1d.neural_networks.candle_predictor.port, 8084)
-        self.assertEqual(btc_1d.neural_networks.signal_classifier.port, 8085)
-        self.assertEqual(btc_1d.analysis.signal_decision_mode, "directional_edge")
-        self.assertTrue(btc_1d.analysis.require_candle_confirmation)
-        self.assertAlmostEqual(btc_1d.analysis.min_directional_prob, 0.38)
-        self.assertAlmostEqual(btc_1d.analysis.min_directional_ratio, 1.6)
-        self.assertEqual(btc_1d.alerts.consecutive_candles, 1)
-        self.assertEqual(btc_1d.training.hidden_layers, (32, 16))
-        self.assertEqual(btc_1d.training.batch_size, 32)
-        self.assertAlmostEqual(btc_1d.training.learning_rate, 0.0003)
-        self.assertAlmostEqual(btc_1d.training.min_learning_rate, 0.00003)
-        self.assertAlmostEqual(btc_1d.training.weight_decay, 0.015)
-        self.assertAlmostEqual(btc_1d.training.dropout_rate, 0.3)
-        self.assertEqual(btc_1d.training.early_stopping_patience, 25)
+        from tradingbot.features import FeaturePipeline
+
+        pipe = FeaturePipeline(btc_1h)
+        self.assertEqual(pipe.max_warmup, 199)
+        self.assertEqual(pipe.build_schema("candles").input_size, 384)
+        self.assertEqual(pipe.build_schema("candles").output_size, 24)
+        self.assertEqual(pipe.build_schema("signal").output_size, 3)
 
         # Reject invalid root-slash export paths
         for bad_export in ({"model_save_dir": "/"}, {"dataset_path_prefix": "/"}, {"report_dir": "/"}):
@@ -160,22 +114,11 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
                 parse_config_dict(raw_exp, base_dir=self.bot_dir)
 
         # Verify inline override in bot.json can disable an asset
-        raw_override = copy.deepcopy(self.bot_raw)
+        raw_override = copy.deepcopy(multi_raw)
         raw_override["assets"][-1]["enabled"] = False
         cfg_override = parse_config_dict(raw_override, base_dir=self.bot_dir)
-        self.assertFalse(cfg_override.get_asset("btc_1d").enabled)
-        self.assertEqual(len(cfg_override.enabled_assets), 3)
-
-        # Verify all configured NN server ports across assets are distinct (zero collisions)
-        all_ports = [
-            p
-            for a in cfg.assets
-            for p in (
-                a.neural_networks.candle_predictor.port,
-                a.neural_networks.signal_classifier.port,
-            )
-        ]
-        self.assertEqual(len(all_ports), len(set(all_ports)))
+        self.assertFalse(cfg_override.get_asset("demo_synthetic_1h").enabled)
+        self.assertEqual(len(cfg_override.enabled_assets), 1)
 
         with self.assertRaises(KeyError):
             cfg.get_asset("nvda_1h")
@@ -238,19 +181,87 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_config_dict(raw_bad_auth, base_dir=self.bot_dir)
 
-    def test_reject_duplicate_and_empty_assets(self) -> None:
+    def test_allow_empty_assets_and_reject_duplicate_assets(self) -> None:
         raw = copy.deepcopy(self.bot_raw)
         raw["assets"] = []
+        parsed_empty = parse_config_dict(raw, base_dir=self.bot_dir)
+        self.assertEqual(parsed_empty.assets, ())
+        self.assertEqual(parsed_empty.enabled_assets, ())
+
+        raw_bad_type = copy.deepcopy(self.bot_raw)
+        raw_bad_type["assets"] = {}
         with self.assertRaises(ConfigError):
-            parse_config_dict(raw, base_dir=self.bot_dir)
+            parse_config_dict(raw_bad_type, base_dir=self.bot_dir)
 
         raw_dup = copy.deepcopy(self.bot_raw)
         raw_dup["assets"] = [
-            {"config_path": "assets/btc_1h.json"},
-            {"config_path": "assets/btc_1h.json"},
+            {"config_path": "assets/example_asset.json"},
+            {"config_path": "assets/example_asset.json"},
         ]
         with self.assertRaises(ConfigError):
             parse_config_dict(raw_dup, base_dir=self.bot_dir)
+
+    def test_bootstrap_default_config_ensure_and_init_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "configs" / "bot.json"
+
+            # 1) ensure_default_config ignores arbitrary non-default missing paths
+            self.assertIsNone(
+                ensure_default_config(tmp_path / "other" / "bot.json", default_path=cfg_path)
+            )
+            self.assertFalse((tmp_path / "other" / "bot.json").exists())
+
+            # 2) ensure_default_config auto-bootstraps minimal default path (0 assets + providers)
+            res = ensure_default_config(cfg_path, default_path=cfg_path)
+            self.assertIsInstance(res, BootstrapResult)
+            assert res is not None
+            self.assertTrue(cfg_path.is_file())
+            self.assertTrue((tmp_path / "configs" / "providers" / "binance_spot.json").is_file())
+            self.assertTrue((tmp_path / "configs" / "providers" / "synthetic.json").is_file())
+            loaded = load_config(cfg_path)
+            self.assertEqual(len(loaded.assets), 0)
+
+            # Second call is a no-op once bot.json exists
+            self.assertIsNone(ensure_default_config(cfg_path, default_path=cfg_path))
+
+            # 3) Non-overwrite protection preserves user edits unless force=True
+            custom_bot = json.loads(cfg_path.read_text(encoding="utf-8"))
+            custom_bot["web"]["title"] = "My Custom Bot"
+            cfg_path.write_text(json.dumps(custom_bot), encoding="utf-8")
+
+            res_keep = bootstrap_default_config(cfg_path, with_demo=True, force=False)
+            self.assertIn(cfg_path, res_keep.skipped_files)
+            self.assertEqual(load_config(cfg_path).web.title, "My Custom Bot")
+
+            res_force = bootstrap_default_config(cfg_path, with_demo=True, copy_example=True, force=True)
+            self.assertIn(cfg_path, res_force.created_files)
+            self.assertTrue((tmp_path / "configs" / "assets" / "demo_synthetic.json").is_file())
+            self.assertTrue((tmp_path / "configs" / "assets" / "example_asset.json").is_file())
+            demo_loaded = load_config(cfg_path)
+            self.assertEqual(len(demo_loaded.assets), 1)
+            self.assertEqual(demo_loaded.assets[0].id, "demo_synthetic_1h")
+
+            # 4) init_config_app.py CLI smoke test on fresh target directory
+            spec = importlib.util.spec_from_file_location("init_config_app", INIT_CONFIG_APP_PATH)
+            assert spec is not None and spec.loader is not None
+            init_app = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(init_app)
+
+            cli_cfg = tmp_path / "cli_configs" / "bot.json"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = init_app.main(["--config", str(cli_cfg), "--with-demo", "--copy-example"])
+            self.assertEqual(rc, 0)
+            self.assertIn("Initialized TradingBot configuration", buf.getvalue())
+            self.assertEqual(len(load_config(cli_cfg).assets), 1)
+
+            # Re-running CLI without --force keeps existing files untouched
+            buf2 = io.StringIO()
+            with redirect_stdout(buf2):
+                rc2 = init_app.main(["--config", str(cli_cfg)])
+            self.assertEqual(rc2, 0)
+            self.assertIn("already exists", buf2.getvalue())
 
     def test_reject_unknown_keys_root_and_asset(self) -> None:
         for path in (
