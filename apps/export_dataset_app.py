@@ -27,7 +27,9 @@ from tradingbot.config import (  # noqa: E402
     AssetConfig,
     ConfigError,
     ProviderConfig,
+    DEFAULT_CONFIG_PATH,
     SyntheticProviderParams,
+    ensure_default_config,
     load_config,
 )
 from tradingbot.dataset import NNTrainingOptions, export_dataset  # noqa: E402
@@ -43,7 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "config",
-        help="Path to root TradingBot JSON configuration (e.g. configs/bot.json).",
+        nargs="?",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Path to root TradingBot JSON configuration (default: configs/bot.json; auto-created if missing).",
     )
     parser.add_argument(
         "--asset",
@@ -357,10 +361,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
+        boot = ensure_default_config(args.config)
+        if boot is not None:
+            print(
+                f"Created minimal default configuration at '{boot.config_path}' (0 assets configured). "
+                "Copy templates from 'templates/configs/assets/' or run './scripts/init_config.sh --with-demo'."
+            )
         cfg = load_config(args.config)
         target_assets = _select_assets(cfg.assets, args.assets)
         if not target_assets:
-            print("No enabled assets selected. Use --asset <id>.")
+            if not cfg.assets:
+                print("No assets configured in bot.json. Add assets from 'templates/configs/assets/' first.")
+            else:
+                print("No enabled assets selected. Use --asset <id>.")
             return 0
 
         hidden_override = (

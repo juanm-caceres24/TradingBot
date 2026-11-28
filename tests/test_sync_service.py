@@ -18,7 +18,7 @@ from tradingbot.providers import BaseProvider, SyncService
 from tradingbot.storage import SQLiteCandleStore
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
 BACKFILL_APP_PATH = ROOT_DIR / "apps" / "backfill_app.py"
 HOUR_MS = 3_600_000
 
@@ -323,7 +323,7 @@ class TestBackfillAppCLI(unittest.TestCase):
 
             # Build self-contained temporary multi-asset synthetic config
             syn_preset = json.loads(
-                (ROOT_DIR / "configs" / "providers" / "synthetic.json").read_text(encoding="utf-8")
+                (ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json").read_text(encoding="utf-8")
             )
             syn_preset["max_candles_per_request"] = 20
             (tmp_path / "synthetic.json").write_text(json.dumps(syn_preset), encoding="utf-8")

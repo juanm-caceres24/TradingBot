@@ -163,9 +163,15 @@
   function renderWatchlist() {
     els.watchlistCount.textContent = String(state.assets.length);
     if (!state.assets.length) {
-      els.watchlist.innerHTML = '<div class="empty-state">No active assets</div>';
+      els.watchlist.innerHTML =
+        '<div class="empty-state">No assets configured.<br>Copy a template from <code>templates/configs/assets/</code> into <code>configs/assets/</code> and register it in <code>configs/bot.json</code>.</div>';
+      els.tickerMeta.textContent = "No assets configured — add assets in configs/bot.json";
+      els.analysisReason.textContent =
+        "No active assets configured. Run ./scripts/init_config.sh --with-demo or add an asset template to configs/bot.json.";
+      els.btnPollNow.disabled = true;
       return;
     }
+    els.btnPollNow.disabled = false;
     els.watchlist.innerHTML = "";
     for (const a of state.assets) {
       const card = document.createElement("div");

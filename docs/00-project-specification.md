@@ -29,11 +29,11 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 
 ### 3.1 Multi-Asset & Multi-Timeframe Management
 - Track an arbitrary, config-driven list of logical **assets** (identified by unique URL-safe `asset_id`, combining symbol and timeframe — e.g., `btc_15m`, `btc_1h`, `btc_4h`, `btc_1d`, `sp500_1h`, `nvda_1h`).
-- Each asset lives in its own modular JSON file under `configs/assets/` (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
+- Each asset lives in its own modular JSON file under your local gitignored `configs/assets/` directory (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
   - Its market (`symbol`, `timeframe`, `market_schedule`: `"24/7"` enforces strict `interval_ms` contiguity in sliding windows, replay horizon checks, and consecutive alert streaks; `"sessions"` allows weekend/holiday timestamp gaps cleanly).
   - Its data provider preset (e.g., `binance_spot` for crypto, another REST preset for equities/indices, or `synthetic` for offline tests).
   - Its runtime mode, indicator list, feature window/normalization, Triple Barrier targets, dedicated/shared/disabled neural-network endpoints, optional `training` defaults, analysis thresholds, and alert rules.
-- Adding a new asset or timeframe requires **zero code changes**: add a JSON file in `configs/assets/` and register it in `configs/bot.json`.
+- Clean core / user-config decoupling: versioned starter templates live under `templates/configs/` (`bot.json`, `providers/binance_spot.json`, `providers/synthetic.json`, `assets/example_asset.json`, `assets/demo_synthetic.json`), while `configs/` is gitignored alongside `data/` and `models/`. On a fresh clone with no `configs/bot.json`, CLI apps auto-bootstrap minimal default files (0 assets configured, or use `./scripts/init_config.sh --with-demo` for an instant offline demo), and empty `"assets": []` boots cleanly without errors. Adding a new asset, provider API, or trained model requires **zero code changes** and **zero Git commits**.
 
 ### 3.2 Configurable Market Data Ingestion
 - Fetch historical and real-time OHLCV candles (`open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `is_closed`) from external exchanges, brokers, or web APIs configured entirely via JSON.
@@ -151,26 +151,26 @@ TradingBot/
 │   ├── 06-runtime-replay-and-webhooks.md
 │   └── 07-web-dashboard-and-api.md
 ├── scripts/                             # Helper shell scripts
+│   ├── init_config.sh
 │   ├── test.sh
 │   ├── backfill.sh
 │   ├── export_dataset.sh
 │   ├── analyze_reports.sh
 │   ├── live.sh
 │   └── replay.sh
-├── configs/                             # External JSON configs (zero hardcoding)
-│   ├── bot.json                         # Root multi-asset configuration
-│   ├── assets/                          # Per-asset / per-timeframe profiles
-│   │   ├── btc_15m.json
-│   │   ├── btc_1h.json
-│   │   ├── btc_4h.json
-│   │   └── btc_1d.json
-│   └── providers/                       # Declarative exchange/synthetic presets
+├── templates/configs/                   # Versioned starter JSON templates (copied into gitignored configs/)
+│   ├── bot.json                         # Minimal root template (0 assets by default)
+│   ├── assets/
+│   │   ├── demo_synthetic.json          # Offline zero-dependency synthetic charting demo
+│   │   └── example_asset.json           # Full REST + dual-NN reference template
+│   └── providers/                       # Generic declarative exchange/synthetic presets
 │       ├── binance_spot.json
 │       └── synthetic.json
+├── configs/                             # Gitignored local user configs (auto-bootstrapped on first run)
 ├── src/tradingbot/                      # Reusable core library (zero external deps)
 │   ├── __init__.py
 │   ├── models.py                        # Timeframe (Monday-aligned 1w), Candle, TimeRange, predictions, AlertEvent
-│   ├── config.py                        # Strict multi-asset JSON loader & dynamic indicator validator
+│   ├── config.py                        # Strict multi-asset JSON loader, dynamic validator & default bootstrapper
 │   ├── storage/                         # CandleStore ABC, SQLiteCandleStore, GapDetector
 │   ├── providers/                       # GenericRestProvider, SyntheticProvider, SyncService (backfill/sync)
 │   ├── indicators/                      # Registry + SMA, EMA, RSI, ATR, BB, SqueezeMomentum, VolatilityRegime, HTFContext
@@ -181,6 +181,7 @@ TradingBot/
 │   ├── runtime/                         # Multi-asset BotOrchestrator (sync_live, live_only), ReplayEngine, EventBus, webhooks
 │   └── web/                             # Stdlib ThreadingHTTPServer + RFC 6455 WebSockets + Alerts API + HiDPI Canvas UI
 ├── apps/                                # Thin CLI entrypoints
+│   ├── init_config_app.py
 │   ├── backfill_app.py
 │   ├── export_dataset_app.py
 │   ├── analyze_reports_app.py
