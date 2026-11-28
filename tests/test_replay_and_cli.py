@@ -514,6 +514,21 @@ class TestReplayAndCLIApps(unittest.TestCase):
                 srv.server_close()
                 th.join(timeout=2.0)
 
+    def test_replay_cli_empty_assets_and_unknown_asset_hint(self) -> None:
+        replay_app = _load_app("replay_app_empty", REPLAY_APP_PATH)
+        empty_tpl = ROOT_DIR / "templates" / "configs" / "bot.json"
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            rc = replay_app.main([str(empty_tpl)])
+        self.assertEqual(rc, 0)
+        self.assertIn("No assets configured", out_buf.getvalue())
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            rc_err = replay_app.main([str(empty_tpl), "--asset", "btc_1h"])
+        self.assertEqual(rc_err, 1)
+        self.assertIn("(none", err_buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

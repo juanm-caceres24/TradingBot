@@ -225,43 +225,89 @@ class TestMultiAssetConfigLoading(unittest.TestCase):
             # Second call is a no-op once bot.json exists
             self.assertIsNone(ensure_default_config(cfg_path, default_path=cfg_path))
 
-            # 3) Non-overwrite protection preserves user edits unless force=True
+            # 3) Non-overwrite protection preserves user edits; with_demo=True registers demo cleanly without clobbering
             custom_bot = json.loads(cfg_path.read_text(encoding="utf-8"))
             custom_bot["web"]["title"] = "My Custom Bot"
             cfg_path.write_text(json.dumps(custom_bot), encoding="utf-8")
 
-            res_keep = bootstrap_default_config(cfg_path, with_demo=True, force=False)
+            res_keep = bootstrap_default_config(cfg_path, with_demo=False, force=False)
             self.assertIn(cfg_path, res_keep.skipped_files)
+            self.assertEqual(res_keep.updated_files, ())
             self.assertEqual(load_config(cfg_path).web.title, "My Custom Bot")
 
+            res_demo = bootstrap_default_config(cfg_path, with_demo=True, force=False)
+            self.assertIn(cfg_path, res_demo.updated_files)
+            self.assertTrue((tmp_path / "configs" / "assets" / "demo_synthetic.json").is_file())
+            demo_preserved = load_config(cfg_path)
+            self.assertEqual(demo_preserved.web.title, "My Custom Bot")
+            self.assertEqual([a.id for a in demo_preserved.assets], ["demo_synthetic_1h"])
+
+            # Repeating with_demo=True is strictly idempotent (no duplicate entry)
+            res_demo2 = bootstrap_default_config(cfg_path, with_demo=True, force=False)
+            self.assertEqual(res_demo2.updated_files, ())
+            self.assertIn(cfg_path, res_demo2.skipped_files)
+            self.assertEqual([a.id for a in load_config(cfg_path).assets], ["demo_synthetic_1h"])
+
+            # force=True resets bot.json back to template defaults
             res_force = bootstrap_default_config(cfg_path, with_demo=True, copy_example=True, force=True)
             self.assertIn(cfg_path, res_force.created_files)
-            self.assertTrue((tmp_path / "configs" / "assets" / "demo_synthetic.json").is_file())
             self.assertTrue((tmp_path / "configs" / "assets" / "example_asset.json").is_file())
             demo_loaded = load_config(cfg_path)
-            self.assertEqual(len(demo_loaded.assets), 1)
-            self.assertEqual(demo_loaded.assets[0].id, "demo_synthetic_1h")
+            self.assertEqual(demo_loaded.web.title, "TradingBot Dashboard")
+            self.assertEqual([a.id for a in demo_loaded.assets], ["demo_synthetic_1h"])
 
-            # 4) init_config_app.py CLI smoke test on fresh target directory
+            # 4) init_config_app.py CLI smoke test (empty init followed by --with-demo registers demo cleanly)
             spec = importlib.util.spec_from_file_location("init_config_app", INIT_CONFIG_APP_PATH)
             assert spec is not None and spec.loader is not None
             init_app = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(init_app)
 
             cli_cfg = tmp_path / "cli_configs" / "bot.json"
+            buf_min = io.StringIO()
+            with redirect_stdout(buf_min):
+                rc_min = init_app.main(["--config", str(cli_cfg)])
+            self.assertEqual(rc_min, 0)
+            self.assertIn(str(cli_cfg), buf_min.getvalue())
+            self.assertEqual(len(load_config(cli_cfg).assets), 0)
+
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = init_app.main(["--config", str(cli_cfg), "--with-demo", "--copy-example"])
             self.assertEqual(rc, 0)
-            self.assertIn("Initialized TradingBot configuration", buf.getvalue())
-            self.assertEqual(len(load_config(cli_cfg).assets), 1)
+            self.assertIn("~ updated", buf.getvalue())
+            self.assertIn(str(cli_cfg), buf.getvalue())
+            self.assertEqual([a.id for a in load_config(cli_cfg).assets], ["demo_synthetic_1h"])
 
             # Re-running CLI without --force keeps existing files untouched
             buf2 = io.StringIO()
             with redirect_stdout(buf2):
-                rc2 = init_app.main(["--config", str(cli_cfg)])
+                rc2 = init_app.main(["--config", str(cli_cfg), "--with-demo"])
             self.assertEqual(rc2, 0)
             self.assertIn("already exists", buf2.getvalue())
+
+    def test_bootstrap_embedded_fallback_and_missing_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            missing_tpl = tmp_path / "no_templates_here"
+            cfg_path = tmp_path / "fb_configs" / "bot.json"
+
+            res = bootstrap_default_config(cfg_path, templates_dir=missing_tpl)
+            self.assertIn(cfg_path, res.created_files)
+            loaded = load_config(cfg_path)
+            self.assertEqual(loaded.assets, ())
+            self.assertEqual(
+                load_provider_preset(cfg_path.parent / "providers" / "binance_spot.json").type,
+                "generic_rest",
+            )
+            self.assertEqual(
+                load_provider_preset(cfg_path.parent / "providers" / "synthetic.json").type,
+                "synthetic",
+            )
+
+            with self.assertRaises(ConfigError):
+                bootstrap_default_config(tmp_path / "d" / "bot.json", templates_dir=missing_tpl, with_demo=True)
+            with self.assertRaises(ConfigError):
+                bootstrap_default_config(tmp_path / "e" / "bot.json", templates_dir=missing_tpl, copy_example=True)
 
     def test_reject_unknown_keys_root_and_asset(self) -> None:
         for path in (

@@ -72,10 +72,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    if res.created_files:
+    if res.created_files or res.updated_files:
         print(f"Initialized TradingBot configuration at '{res.config_path}':")
         for p in res.created_files:
             print(f"  + created {p}")
+        for p in res.updated_files:
+            print(f"  ~ updated {p}")
     else:
         print(f"Configuration already exists at '{res.config_path}' (no files overwritten; use --force to reset).")
 
@@ -83,12 +85,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         for p in res.skipped_files:
             print(f"  = kept existing {p}")
 
-    print(
-        "\nNext steps:\n"
-        "  - Copy templates/configs/assets/example_asset.json to configs/assets/<your_asset>.json\n"
-        "  - Register it under \"assets\" in configs/bot.json\n"
-        "  - Start dashboard/runtime: ./scripts/live.sh"
+    assets_dir = res.config_path.parent / "assets"
+    is_default = res.config_path == DEFAULT_CONFIG_PATH
+    live_cmd = "./scripts/live.sh" if is_default else f"./scripts/live.sh {res.config_path}"
+    export_cmd = (
+        "./scripts/export_dataset.sh --asset demo_synthetic_1h --kind both --synthetic-candles 2000"
+        if is_default
+        else f"./scripts/export_dataset.sh {res.config_path} --asset demo_synthetic_1h --kind both --synthetic-candles 2000"
     )
+    if args.with_demo:
+        print(
+            "\nNext steps:\n"
+            f"  - Start dashboard immediately with the offline synthetic demo: {live_cmd}\n"
+            f"  - Or export a synthetic training dataset: {export_cmd}\n"
+            f"  - To add your own market asset, copy templates/configs/assets/example_asset.json to {assets_dir}/<your_asset>.json and register it in {res.config_path}"
+        )
+    else:
+        print(
+            "\nNext steps:\n"
+            f"  - Copy templates/configs/assets/example_asset.json to {assets_dir}/<your_asset>.json\n"
+            f"  - Register it under \"assets\" in {res.config_path} (or run ./scripts/init_config.sh --with-demo for an offline demo)\n"
+            f"  - Start dashboard/runtime: {live_cmd}"
+        )
     return 0
 
 

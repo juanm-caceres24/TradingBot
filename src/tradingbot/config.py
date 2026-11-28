@@ -1529,6 +1529,7 @@ class BootstrapResult:
     config_path: Path
     created_files: tuple[Path, ...]
     skipped_files: tuple[Path, ...]
+    updated_files: tuple[Path, ...] = ()
 
 
 def _write_json_if_needed(
@@ -1545,6 +1546,28 @@ def _write_json_if_needed(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(payload, encoding="utf-8")
     created.append(target)
+
+
+def _demo_asset_already_registered(
+    assets_list: list[Any], *, base_dir: Path, demo_rel: str
+) -> bool:
+    demo_target = (base_dir / demo_rel).resolve()
+    for item in assets_list:
+        if not isinstance(item, dict):
+            continue
+        if item.get("id") == "demo_synthetic_1h":
+            return True
+        raw_path = item.get("config_path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            norm = raw_path.strip().lstrip("./")
+            if norm == demo_rel:
+                return True
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = base_dir / candidate
+            if candidate.resolve() == demo_target:
+                return True
+    return False
 
 
 def bootstrap_default_config(
@@ -1567,6 +1590,7 @@ def bootstrap_default_config(
 
     created: list[Path] = []
     skipped: list[Path] = []
+    updated: list[Path] = []
 
     # Copy generic provider presets (falling back to embedded JSON if templates_dir is unavailable)
     for fname, fallback_obj in (
@@ -1588,6 +1612,7 @@ def bootstrap_default_config(
         )
 
     # Optional offline demo asset and/or reference example asset
+    demo_rel = "assets/demo_synthetic.json"
     if with_demo:
         demo_tpl = tpl_dir / "assets" / "demo_synthetic.json"
         if not demo_tpl.is_file():
@@ -1612,30 +1637,46 @@ def bootstrap_default_config(
             skipped=skipped,
         )
 
-    # Minimal root bot.json (0 assets by default, or demo_synthetic when with_demo=True)
-    bot_tpl = tpl_dir / "bot.json"
-    bot_obj = (
-        json.loads(bot_tpl.read_text(encoding="utf-8"))
-        if bot_tpl.is_file()
-        else json.loads(json.dumps(_FALLBACK_BOT_CONFIG))
-    )
-    if with_demo:
-        bot_obj["assets"] = [{"config_path": "assets/demo_synthetic.json"}]
+    # Minimal root bot.json (0 assets by default, or demo_synthetic when with_demo=True).
+    # When with_demo=True and bot.json already exists (e.g. after initial auto-bootstrap),
+    # register demo_synthetic.json cleanly without overwriting any other user settings.
+    if cfg_path.exists() and not force:
+        if with_demo:
+            existing_obj = _expect_dict(_load_json_file(cfg_path, "Configuration"), "root")
+            existing_assets = _expect_list(
+                _require_key(existing_obj, "assets", "root"), "assets"
+            )
+            if _demo_asset_already_registered(
+                existing_assets, base_dir=base_dir, demo_rel=demo_rel
+            ):
+                skipped.append(cfg_path)
+            else:
+                existing_assets.append({"config_path": demo_rel})
+                cfg_path.write_text(json.dumps(existing_obj, indent=2) + "\n", encoding="utf-8")
+                updated.append(cfg_path)
+        else:
+            skipped.append(cfg_path)
     else:
-        bot_obj["assets"] = []
-
-    _write_json_if_needed(
-        cfg_path,
-        json.dumps(bot_obj, indent=2) + "\n",
-        force=force,
-        created=created,
-        skipped=skipped,
-    )
+        bot_tpl = tpl_dir / "bot.json"
+        bot_obj = (
+            json.loads(bot_tpl.read_text(encoding="utf-8"))
+            if bot_tpl.is_file()
+            else json.loads(json.dumps(_FALLBACK_BOT_CONFIG))
+        )
+        bot_obj["assets"] = [{"config_path": demo_rel}] if with_demo else []
+        _write_json_if_needed(
+            cfg_path,
+            json.dumps(bot_obj, indent=2) + "\n",
+            force=True,
+            created=created,
+            skipped=skipped,
+        )
 
     return BootstrapResult(
         config_path=cfg_path,
         created_files=tuple(created),
         skipped_files=tuple(skipped),
+        updated_files=tuple(updated),
     )
 
 

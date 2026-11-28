@@ -98,7 +98,7 @@ def _select_assets(
         selected: list[AssetConfig] = []
         for asset_id in dict.fromkeys(requested_ids):
             if asset_id not in by_id:
-                available = ", ".join(sorted(by_id.keys()))
+                available = ", ".join(sorted(by_id.keys())) or "(none — add assets in configs/bot.json)"
                 raise ConfigError(
                     f"Unknown asset_id '{asset_id}'. Available assets: {available}"
                 )

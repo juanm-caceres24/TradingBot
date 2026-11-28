@@ -318,8 +318,9 @@ def _select_assets(all_assets: tuple[AssetConfig, ...], requested: list[str]) ->
         selected: list[AssetConfig] = []
         for aid in dict.fromkeys(requested):
             if aid not in by_id:
+                available = ", ".join(sorted(by_id.keys())) or "(none — add assets in configs/bot.json)"
                 raise ConfigError(
-                    f"Unknown asset_id '{aid}'. Available: {', '.join(sorted(by_id.keys()))}"
+                    f"Unknown asset_id '{aid}'. Available: {available}"
                 )
             selected.append(by_id[aid])
         return selected
