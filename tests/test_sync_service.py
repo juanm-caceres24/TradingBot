@@ -406,6 +406,21 @@ class TestBackfillAppCLI(unittest.TestCase):
                     1,
                 )
 
+    def test_backfill_cli_empty_assets_and_unknown_asset_hint(self) -> None:
+        backfill_app = _load_backfill_app_module()
+        empty_tpl = ROOT_DIR / "templates" / "configs" / "bot.json"
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            rc = backfill_app.main([str(empty_tpl), "--sync-now"])
+        self.assertEqual(rc, 0)
+        self.assertIn("No assets configured", out_buf.getvalue())
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            rc_err = backfill_app.main([str(empty_tpl), "--asset", "btc_1h", "--sync-now"])
+        self.assertEqual(rc_err, 1)
+        self.assertIn("(none", err_buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

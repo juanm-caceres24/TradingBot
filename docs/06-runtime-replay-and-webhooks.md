@@ -8,7 +8,7 @@ This document describes the live multi-asset orchestrator (`BotOrchestrator`), t
 
 ```text
 BotOrchestrator (per-asset poll scheduler, thread-safe AssetRunner locks, SIGINT/SIGTERM stop)
-       │
+       │  (example user-configured assets in local configs/bot.json; 0 assets also supported)
        ├── AssetRunner("btc_15m", poll=5s) ──► SyncService / GapDetector ──► SQLiteCandleStore
        ├── AssetRunner("btc_1h", poll=5s)  ──► SyncService / GapDetector ──► SQLiteCandleStore
        ├── AssetRunner("btc_4h", poll=15s) ──► IndicatorEngine + PredictionEngine ──► server_app(s)
@@ -68,14 +68,19 @@ Steps chronologically through stored SQLite candles in O(N) time (exploiting str
 
 ## 4. CLI Usage
 
+*(The `config` path defaults to `configs/bot.json` and auto-bootstraps minimal defaults if missing. When `web.enabled=true` and `--headless` is omitted, `live.sh` starts the Web Dashboard cleanly even with 0 configured assets).*
+
 ```bash
+# Start live collector + embedded Web Dashboard (auto-creates configs/bot.json if missing)
+./scripts/live.sh --web-host 0.0.0.0 --web-port 8000
+
 # Continuous multi-asset live collector (headless, optional --all-assets, --strict-nn, --max-cycles, --quiet)
 ./scripts/live.sh configs/bot.json --headless
 
-# Live-only mode for a single asset
-./scripts/live.sh configs/bot.json --asset btc_1h --mode live_only --headless
+# Live-only mode for a single configured asset
+./scripts/live.sh --asset demo_synthetic_1h --mode live_only --headless
 
 # Historical replay over stored SQLite candles
 # (supports --start, --end, --signal-only, --step-delay, --persist-predictions, --persist-alerts, --dispatch-webhooks, --verbose)
-./scripts/replay.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-02-01 --verbose
+./scripts/replay.sh --asset btc_1h --start 2025-01-01 --end 2025-02-01 --verbose
 ```

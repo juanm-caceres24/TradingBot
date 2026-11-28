@@ -55,7 +55,7 @@ For `templates/configs/assets/example_asset.json` (`W = 24`, `H = 6`, `max_warmu
 
 ### Model A — Candle Predictor (`kind = "candles"`)
 - **Output (`H × 4`):** relative `(open, high, low, close)` of future candles `t+1 .. t+H` normalized by `(C_t, S_t)`.
-- **`libnn` config:** `loss: "huber"` (default on shipped BTC profiles, with configurable `huber_delta`, preventing extreme flash-wick outliers from distorting predictions) or `"mse"`, output activation `"linear"`.
+- **`libnn` config:** `loss: "huber"` (configured in `templates/configs/assets/example_asset.json` and `demo_synthetic.json`, with configurable `huber_delta`, preventing extreme flash-wick outliers from distorting predictions) or `"mse"` (schema default when `"training"` is omitted), output activation `"linear"`.
 
 ### Model B — Signal Classifier (`kind = "signal"`)
 - **Output (`3`):** one-hot `[HOLD, LONG, SHORT]` via conservative **Triple Barrier Labeling** over future bars `t+1 .. t+H` supporting both fixed-percentage (`mode: "pct"` with `take_profit_pct` / `stop_loss_pct`) and volatility-adaptive ATR-multiple barriers (`mode: "atr_multiple"` with `take_profit_atr` / `stop_loss_atr`, keeping class balance stationary across volatility regimes; if a bar touches both SL and TP simultaneously, that side is invalidated).
@@ -73,9 +73,11 @@ For `templates/configs/assets/example_asset.json` (`W = 24`, `H = 6`, `max_warmu
 
 ## 4. CLI Usage (`export_dataset.sh` & `analyze_reports.sh`)
 
+*(The `config` path defaults to `configs/bot.json`. Run `./scripts/init_config.sh --with-demo` to try `demo_synthetic_1h` immediately, or register your own asset copied from `templates/configs/assets/example_asset.json`).*
+
 ```bash
 # 1) Generate an offline synthetic test dataset + v0.7.0 nn_config.json (2000 bars, zero API needed)
-./scripts/export_dataset.sh configs/bot.json --asset btc_1h --kind both --synthetic-candles 2000
+./scripts/export_dataset.sh --asset demo_synthetic_1h --kind both --synthetic-candles 2000
 
 # 2) Export from real SQLite candles using configs/bot.json export.* and per-asset training.* defaults
 #    (add --update-asset-schema to update the asset's configured schema_path;
