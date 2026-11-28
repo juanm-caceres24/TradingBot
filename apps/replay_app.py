@@ -18,7 +18,13 @@ _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from tradingbot.config import AssetConfig, ConfigError, load_config  # noqa: E402
+from tradingbot.config import (  # noqa: E402
+    AssetConfig,
+    ConfigError,
+    DEFAULT_CONFIG_PATH,
+    ensure_default_config,
+    load_config,
+)
 from tradingbot.models import AlertEvent, Candle, PredictionSnapshot, format_ms_to_iso, parse_iso_to_ms  # noqa: E402
 from tradingbot.nn_client import NNClientError, SchemaMismatchError  # noqa: E402
 from tradingbot.runtime import ReplayEngine, WebhookDispatcher  # noqa: E402
@@ -32,7 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "config",
-        help="Path to root TradingBot JSON configuration (e.g. configs/bot.json).",
+        nargs="?",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Path to root TradingBot JSON configuration (default: configs/bot.json; auto-created if missing).",
     )
     parser.add_argument(
         "--asset",
@@ -91,8 +99,9 @@ def _select_assets(all_assets: tuple[AssetConfig, ...], requested: list[str]) ->
         selected: list[AssetConfig] = []
         for aid in dict.fromkeys(requested):
             if aid not in by_id:
+                available = ", ".join(sorted(by_id.keys())) or "(none — add assets in configs/bot.json)"
                 raise ConfigError(
-                    f"Unknown asset_id '{aid}'. Available: {', '.join(sorted(by_id.keys()))}"
+                    f"Unknown asset_id '{aid}'. Available: {available}"
                 )
             selected.append(by_id[aid])
         return selected
@@ -125,10 +134,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
+        boot = ensure_default_config(args.config)
+        if boot is not None:
+            print(
+                f"Created minimal default configuration at '{boot.config_path}' (0 assets configured). "
+                "Copy templates from 'templates/configs/assets/' or run './scripts/init_config.sh --with-demo'."
+            )
         cfg = load_config(args.config)
         selected_assets = _select_assets(cfg.assets, args.assets)
         if not selected_assets:
-            print("No enabled assets selected. Use --asset <id>.")
+            if not cfg.assets:
+                print("No assets configured in bot.json. Add assets from 'templates/configs/assets/' first.")
+            else:
+                print("No enabled assets selected. Use --asset <id>.")
             return 0
 
         start_ms = parse_iso_to_ms(args.start) if args.start else None

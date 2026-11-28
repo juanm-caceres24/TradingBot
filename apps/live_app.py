@@ -21,7 +21,13 @@ _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from tradingbot.config import AssetConfig, ConfigError, load_config  # noqa: E402
+from tradingbot.config import (  # noqa: E402
+    AssetConfig,
+    ConfigError,
+    DEFAULT_CONFIG_PATH,
+    ensure_default_config,
+    load_config,
+)
 from tradingbot.models import format_ms_to_iso  # noqa: E402
 from tradingbot.nn_client import NNClientError, SchemaMismatchError  # noqa: E402
 from tradingbot.runtime import BotOrchestrator, PollOutcome  # noqa: E402
@@ -36,7 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "config",
-        help="Path to root TradingBot JSON configuration (e.g. configs/bot.json).",
+        nargs="?",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Path to root TradingBot JSON configuration (default: configs/bot.json; auto-created if missing).",
     )
     parser.add_argument(
         "--asset",
@@ -102,8 +110,9 @@ def _select_assets(
         selected: list[AssetConfig] = []
         for aid in dict.fromkeys(requested_ids):
             if aid not in by_id:
+                available = ", ".join(sorted(by_id.keys())) or "(none — add assets in configs/bot.json)"
                 raise ConfigError(
-                    f"Unknown asset_id '{aid}'. Available: {', '.join(sorted(by_id.keys()))}"
+                    f"Unknown asset_id '{aid}'. Available: {available}"
                 )
             selected.append(by_id[aid])
     elif include_disabled:
@@ -155,10 +164,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
+        boot = ensure_default_config(args.config)
+        if boot is not None:
+            print(
+                f"Created minimal default configuration at '{boot.config_path}' (0 assets configured). "
+                "Copy templates from 'templates/configs/assets/' or run './scripts/init_config.sh --with-demo'."
+            )
         cfg = load_config(args.config)
         selected_assets = _select_assets(cfg.assets, args.assets, args.all_assets, args.mode)
-        if not selected_assets:
-            print("No enabled assets selected. Use --asset <id> or --all-assets.")
+        web_will_run = (not args.headless) and cfg.web.enabled
+        if not selected_assets and not web_will_run:
+            if not cfg.assets:
+                print(
+                    "No assets configured in bot.json. Copy a template from "
+                    "'templates/configs/assets/' into 'configs/assets/' and register it in "
+                    "'configs/bot.json' (or run './scripts/init_config.sh --with-demo')."
+                )
+            else:
+                print("No enabled assets selected. Use --asset <id> or --all-assets.")
             return 0
 
         with SQLiteCandleStore(
@@ -197,8 +220,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prev_sigterm = None
 
             try:
-                asset_list = ", ".join(a.id for a in selected_assets)
-                print(f"Starting TradingBot live runtime for assets: {asset_list}")
+                if selected_assets:
+                    asset_list = ", ".join(a.id for a in selected_assets)
+                    print(f"Starting TradingBot live runtime for assets: {asset_list}")
+                else:
+                    print(
+                        "Starting TradingBot with 0 active assets (Web Dashboard ready; "
+                        "register assets from templates/configs/assets/ in configs/bot.json)."
+                    )
                 cycles = orchestrator.run_loop(
                     strict_nn_startup=args.strict_nn,
                     max_cycles=args.max_cycles,

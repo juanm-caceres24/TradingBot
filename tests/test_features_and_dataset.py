@@ -30,8 +30,8 @@ from tradingbot.providers import SyntheticProvider, create_provider
 from tradingbot.storage import SQLiteCandleStore
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
-BOT_CONFIG_PATH = ROOT_DIR / "configs" / "bot.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
+BOT_CONFIG_PATH = ROOT_DIR / "templates" / "configs" / "bot.json"
 EXPORT_APP_PATH = ROOT_DIR / "apps" / "export_dataset_app.py"
 HOUR_MS = 3_600_000
 
@@ -351,12 +351,25 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             tmp_path = Path(tmp)
             out_syn = tmp_path / "syn_exports"
 
+            # Empty template bot.json (0 assets) exits cleanly with code 0
+            buf_empty = io.StringIO()
+            with redirect_stdout(buf_empty):
+                rc_empty = export_app.main([str(BOT_CONFIG_PATH)])
+            self.assertEqual(rc_empty, 0)
+            self.assertIn("No assets configured", buf_empty.getvalue())
+
+            # Build a temporary root bot config preserving templates/configs/bot.json export defaults + example asset
+            tpl_bot = json.loads(BOT_CONFIG_PATH.read_text(encoding="utf-8"))
+            tpl_bot["assets"] = [{"config_path": str(BTC_1H_ASSET_PATH.resolve())}]
+            root_bot_with_export = tmp_path / "bot_with_export.json"
+            root_bot_with_export.write_text(json.dumps(tpl_bot), encoding="utf-8")
+
             # Mode 1: offline synthetic test dataset
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = export_app.main(
                     [
-                        str(BOT_CONFIG_PATH),
+                        str(root_bot_with_export),
                         "--asset",
                         "btc_1h",
                         "--kind",
@@ -377,7 +390,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             self.assertIn("[signal] samples=54", output_text)
             self.assertTrue((out_syn / "btc_1h_candles_nn_config.json").is_file())
             self.assertTrue((out_syn / "btc_1h_signal_nn_config.json").is_file())
-            # Root configs/bot.json configures export.dataset_path_prefix="data", model_save_dir="models", report_dir="reports"
+            # Template bot.json configures export.dataset_path_prefix="data", model_save_dir="models", report_dir="reports"
             syn_nn_cfg = json.loads((out_syn / "btc_1h_candles_nn_config.json").read_text(encoding="utf-8"))
             self.assertEqual(syn_nn_cfg["training"]["dataset_path"], "data/btc_1h_candles_24to6.csv")
             self.assertEqual(syn_nn_cfg["model"]["save_path"], "models/btc_1h_candles.json")
@@ -390,7 +403,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             db_path = tmp_path / "market.db"
             out_db = tmp_path / "db_exports"
             asset_raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
-            asset_raw["provider"] = {"preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())}
+            asset_raw["provider"] = {"preset_path": str((ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json").resolve())}
             asset_raw["neural_networks"]["candle_predictor"]["schema_path"] = str(out_db / "btc_1h_candles_schema.json")
             asset_file = tmp_path / "btc_1h.json"
             asset_file.write_text(json.dumps(asset_raw), encoding="utf-8")
@@ -440,7 +453,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
             with redirect_stdout(buf3):
                 rc3 = export_app.main(
                     [
-                        str(BOT_CONFIG_PATH),
+                        str(root_bot_with_export),
                         "--asset",
                         "btc_1h",
                         "--kind",
@@ -521,7 +534,7 @@ class TestDatasetExporterAndNNConfig(unittest.TestCase):
                 self.assertEqual(
                     export_app.main(
                         [
-                            str(BOT_CONFIG_PATH),
+                            str(root_bot_with_export),
                             "--asset",
                             "btc_1h",
                             "--synthetic-candles",

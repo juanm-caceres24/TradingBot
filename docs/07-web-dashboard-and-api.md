@@ -6,7 +6,7 @@ This document describes the embedded 24/7 Web Dashboard (`src/tradingbot/web/`),
 
 ## 1. Zero-Dependency Architecture
 
-Mirroring `NeuralNetwork`'s POSIX socket inference server, the entire TradingBot stack (`v0.1.0` through `v0.10.0`) runs using **Python's standard library only** — zero `pip install`, zero Node.js/npm build steps, and zero external CDNs:
+Mirroring `NeuralNetwork`'s POSIX socket inference server, the entire TradingBot stack (`v0.1.0` through `v1.0.0`) runs using **Python's standard library only** — zero `pip install`, zero Node.js/npm build steps, and zero external CDNs:
 
 ```text
 Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp / Email)
@@ -57,8 +57,9 @@ Browser (LAN / Tailscale)                     External Bot (Telegram / WhatsApp 
 ## 4. Running on a 24/7 Server over LAN / Tailscale
 
 ```bash
-# Bind to all interfaces (LAN + Tailscale) on port 8000 (from configs/bot.json)
-./scripts/live.sh configs/bot.json
+# Bind to all interfaces (LAN + Tailscale) on port 8000 (defaults to configs/bot.json;
+# auto-creates minimal defaults if configs/ does not exist yet, and boots cleanly with 0 assets)
+./scripts/live.sh
 
 # Or bind strictly to your Tailscale IP (recommended for private remote access)
 ./scripts/live.sh configs/bot.json --web-host 100.x.y.z --web-port 8000

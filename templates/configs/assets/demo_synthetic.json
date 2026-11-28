@@ -1,19 +1,19 @@
 {
-  "id": "btc_1d",
+  "id": "demo_synthetic_1h",
   "enabled": true,
   "market": {
-    "symbol": "BTCUSDT",
-    "timeframe": "1d",
+    "symbol": "SYNTHUSDT",
+    "timeframe": "1h",
     "market_schedule": "24/7"
   },
   "provider": {
-    "preset_path": "../providers/binance_spot.json"
+    "preset_path": "../providers/synthetic.json"
   },
   "runtime": {
-    "mode": "sync_live",
-    "poll_interval_sec": 30.0,
+    "mode": "live_only",
+    "poll_interval_sec": 5.0,
     "initial_history_from": "",
-    "fill_internal_gaps": true,
+    "fill_internal_gaps": false,
     "persist_to_db": true,
     "predict_on_open_candle": false
   },
@@ -71,13 +71,13 @@
       "plot": "none"
     },
     {
-      "id": "htf_1w",
+      "id": "htf_4h",
       "type": "htf_context",
       "params": {
-        "base_timeframe": "1d",
-        "htf_timeframe": "1w",
-        "ema_fast": 8,
-        "ema_slow": 21,
+        "base_timeframe": "1h",
+        "htf_timeframe": "4h",
+        "ema_fast": 12,
+        "ema_slow": 36,
         "rsi_period": 14
       },
       "use_in_nn": true,
@@ -86,68 +86,68 @@
   ],
   "features": {
     "input_window": 24,
-    "forecast_horizon": 7,
+    "forecast_horizon": 6,
     "stride": 1,
     "normalization": "atr_relative",
     "atr_period": 14,
     "triple_barrier": {
       "mode": "atr_multiple",
-      "take_profit_atr": 1.8,
-      "stop_loss_atr": 1.2
+      "take_profit_atr": 1.5,
+      "stop_loss_atr": 1.0
     }
   },
   "neural_networks": {
     "timeout_sec": 5.0,
     "verify_schema_on_start": true,
     "candle_predictor": {
-      "enabled": true,
+      "enabled": false,
       "host": "127.0.0.1",
-      "port": 8084,
-      "schema_path": "data/btc_1d_candles_schema.json"
+      "port": 8080,
+      "schema_path": "data/demo_synthetic_1h_candles_schema.json"
     },
     "signal_classifier": {
-      "enabled": true,
+      "enabled": false,
       "host": "127.0.0.1",
-      "port": 8085,
-      "schema_path": "data/btc_1d_signal_schema.json"
+      "port": 8081,
+      "schema_path": "data/demo_synthetic_1h_signal_schema.json"
     },
     "extra_models": {}
   },
   "analysis": {
     "signal_decision_mode": "directional_edge",
     "min_signal_confidence": 0.55,
-    "min_directional_prob": 0.38,
-    "min_directional_ratio": 1.6,
+    "min_directional_prob": 0.40,
+    "min_directional_ratio": 1.8,
     "tp_sl_source": "triple_barrier",
-    "require_candle_confirmation": true,
+    "require_candle_confirmation": false,
     "min_risk_reward": 1.5,
-    "min_expected_move_pct": 0.002
+    "min_expected_move_pct": 0.0005
   },
   "alerts": {
-    "enabled": true,
+    "enabled": false,
     "actions": ["LONG", "SHORT"],
-    "min_confidence": 0.40,
+    "min_confidence": 0.44,
     "min_risk_reward": 1.5,
-    "min_expected_move_pct": 0.002,
-    "consecutive_candles": 1,
-    "cooldown_candles": 3
+    "min_expected_move_pct": 0.0005,
+    "consecutive_candles": 2,
+    "cooldown_candles": 5
   },
   "training": {
-    "hidden_layers": [32, 16],
+    "hidden_layers": [64, 32],
     "hidden_activation": "leaky_relu",
     "candle_loss": "huber",
     "huber_delta": 1.0,
     "optimizer": "adam",
-    "epochs": 80,
-    "batch_size": 32,
-    "learning_rate": 0.0003,
+    "epochs": 40,
+    "batch_size": 64,
+    "learning_rate": 0.0004,
     "lr_schedule": "cosine",
-    "min_learning_rate": 0.00003,
-    "weight_decay": 0.015,
-    "dropout_rate": 0.3,
+    "min_learning_rate": 0.00004,
+    "weight_decay": 0.01,
+    "dropout_rate": 0.2,
     "grad_clip_norm": 1.0,
     "validation_split": 0.2,
-    "early_stopping_patience": 25,
+    "early_stopping_patience": 15,
     "early_stopping_min_delta": 0.0001,
     "num_threads": 4,
     "log_every_epochs": 10

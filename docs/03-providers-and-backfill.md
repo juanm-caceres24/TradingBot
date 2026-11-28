@@ -23,13 +23,13 @@ configs/bot.json ──► AssetConfig (per asset/timeframe)
 ```
 
 - **Zero external dependencies:** Uses only Python's standard library (`urllib.request`, `json`, `hashlib`, `sqlite3`).
-- **Shared rate-limit throttling:** `SyncService` caches provider instances by canonical full `ProviderConfig` JSON, so multiple assets sharing an identical preset (e.g., `btc_1h`, `btc_4h`, `btc_1d` on `binance_spot.json`) share one unified rate-limit throttle while distinct per-asset overrides remain isolated.
+- **Shared rate-limit throttling:** `SyncService` caches provider instances by canonical full `ProviderConfig` JSON, so multiple assets sharing an identical preset (e.g., `btc_15m`, `btc_1h`, `btc_4h`, `btc_1d` on `binance_spot.json`) share one unified rate-limit throttle while distinct per-asset overrides remain isolated.
 
 ---
 
 ## 2. Declarative REST Provider (`GenericRestProvider`)
 
-Configured completely via JSON presets (e.g. `configs/providers/binance_spot.json`):
+Configured completely via JSON presets (versioned templates live in `templates/configs/providers/`, e.g. `binance_spot.json` for `array_of_arrays` and `example_rest_objects.json` for nested `array_of_objects` + env API keys; `binance_spot.json` and `synthetic.json` are copied automatically into local gitignored `configs/providers/` on first run or via `./scripts/init_config.sh`):
 - **Supported payload structures:**
   - `array_of_arrays` (Binance Spot `/api/v3/klines`) with integer column indices.
   - `array_of_objects` (brokers / Bybit / Polygon-like APIs) with string field names and optional dot-separated `data_path` (e.g., `"result.bars"`).
@@ -46,7 +46,7 @@ Configured completely via JSON presets (e.g. `configs/providers/binance_spot.jso
 
 ## 3. Deterministic Synthetic Provider (`SyntheticProvider`)
 
-Configured via `configs/providers/synthetic.json`:
+Configured via `templates/configs/providers/synthetic.json` (copied automatically to local `configs/providers/synthetic.json`):
 - **Chunk-invariant & O(1) per candle:** Fetching `[t0, t100)` yields bit-for-bit identical candles to paginated chunks `[t0, t37)` + `[t37, t100)`.
 - **Learnable synthetic dynamics:** Combines multi-scale cyclical waves (24, 96, 360 bars), bounded drift, seeded per-bar noise, continuous `open[k] == close[k-1]` bars, and volatility-correlated volume so downstream `NeuralNetwork` training tests exhibit genuine loss reduction.
 
@@ -65,20 +65,22 @@ Configured via `configs/providers/synthetic.json`:
 
 ## 5. CLI Usage (`apps/backfill_app.py` / `scripts/backfill.sh`)
 
+*(The `config` path defaults to `configs/bot.json` and auto-bootstraps minimal defaults if missing. Examples below assume you have registered an asset such as `demo_synthetic_1h` via `./scripts/init_config.sh --with-demo` or your own asset from `templates/configs/assets/example_asset.json` in `configs/bot.json`).*
+
 ```bash
 # Preview missing ranges without hitting any external API
-./scripts/backfill.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-01-10 --dry-run
+./scripts/backfill.sh --asset demo_synthetic_1h --start 2025-01-01 --end 2025-01-10 --dry-run
 
-# Download a bounded historical range (e.g. BTC 1h from Binance Spot)
+# Download a bounded historical range for a configured asset (e.g. btc_1h from Binance Spot)
 ./scripts/backfill.sh configs/bot.json --asset btc_1h --start 2025-01-01 --end 2025-02-01
 
 # Auto-detect and repair head/internal/tail gaps up to now for all enabled assets
-./scripts/backfill.sh configs/bot.json --sync-now
+./scripts/backfill.sh --sync-now
 
 # Ensure at least N closed candles exist per asset (useful before first dataset export)
-./scripts/backfill.sh configs/bot.json --sync-now --min-candles 5000
+./scripts/backfill.sh --sync-now --min-candles 5000
 
-# Backfill all configured assets (including any disabled ones) or force-recheck a specific asset
-./scripts/backfill.sh configs/bot.json --sync-now --all-assets
-./scripts/backfill.sh configs/bot.json --asset btc_1d --start 2020-01-01 --force-recheck
+# Backfill all configured assets (including disabled ones) or force-recheck a specific asset
+./scripts/backfill.sh --sync-now --all-assets
+./scripts/backfill.sh --asset btc_1h --start 2024-01-01 --force-recheck
 ```

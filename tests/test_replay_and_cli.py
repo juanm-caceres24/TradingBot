@@ -20,7 +20,7 @@ from tradingbot.storage import SQLiteCandleStore
 from test_nn_client import _make_mock_nn_server
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-BTC_1H_ASSET_PATH = ROOT_DIR / "configs" / "assets" / "btc_1h.json"
+BTC_1H_ASSET_PATH = ROOT_DIR / "templates" / "configs" / "assets" / "example_asset.json"
 LIVE_APP_PATH = ROOT_DIR / "apps" / "live_app.py"
 REPLAY_APP_PATH = ROOT_DIR / "apps" / "replay_app.py"
 HOUR_MS = 3_600_000
@@ -48,7 +48,7 @@ class TestReplayAndCLIApps(unittest.TestCase):
         try:
             raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
             raw_asset["provider"] = {
-                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+                "preset_path": str((ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json").resolve())
             }
             raw_asset["runtime"]["poll_interval_sec"] = 0.05
             raw_asset["neural_networks"]["candle_predictor"] = {
@@ -265,7 +265,7 @@ class TestReplayAndCLIApps(unittest.TestCase):
         try:
             raw_asset = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
             raw_asset["provider"] = {
-                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+                "preset_path": str((ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json").resolve())
             }
             raw_asset["features"]["triple_barrier"] = {
                 "mode": "pct",
@@ -380,7 +380,7 @@ class TestReplayAndCLIApps(unittest.TestCase):
         def _make_asset(port: int) -> dict[str, Any]:
             raw = json.loads(BTC_1H_ASSET_PATH.read_text(encoding="utf-8"))
             raw["provider"] = {
-                "preset_path": str((ROOT_DIR / "configs" / "providers" / "synthetic.json").resolve())
+                "preset_path": str((ROOT_DIR / "templates" / "configs" / "providers" / "synthetic.json").resolve())
             }
             raw["features"]["triple_barrier"] = {
                 "mode": "pct",
@@ -513,6 +513,21 @@ class TestReplayAndCLIApps(unittest.TestCase):
                 srv.shutdown()
                 srv.server_close()
                 th.join(timeout=2.0)
+
+    def test_replay_cli_empty_assets_and_unknown_asset_hint(self) -> None:
+        replay_app = _load_app("replay_app_empty", REPLAY_APP_PATH)
+        empty_tpl = ROOT_DIR / "templates" / "configs" / "bot.json"
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            rc = replay_app.main([str(empty_tpl)])
+        self.assertEqual(rc, 0)
+        self.assertIn("No assets configured", out_buf.getvalue())
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            rc_err = replay_app.main([str(empty_tpl), "--asset", "btc_1h"])
+        self.assertEqual(rc_err, 1)
+        self.assertIn("(none", err_buf.getvalue())
 
 
 if __name__ == "__main__":

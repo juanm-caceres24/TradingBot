@@ -17,9 +17,11 @@ dist/
 venv/
 env/
 
-# Local runtime data, databases, datasets & trained models
+# Local runtime data, configs, databases, datasets, reports & trained models
+/configs/
 data/
 models/
+/reports/
 logs/
 *.csv
 *.db

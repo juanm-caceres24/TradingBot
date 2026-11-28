@@ -28,12 +28,12 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 ## 3. Functional Requirements
 
 ### 3.1 Multi-Asset & Multi-Timeframe Management
-- Track an arbitrary, config-driven list of logical **assets** (identified by unique URL-safe `asset_id`, combining symbol and timeframe — e.g., `btc_1h`, `btc_4h`, `btc_1d`, `sp500_1h`, `nvda_1h`).
-- Each asset lives in its own modular JSON file under `configs/assets/` (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
+- Track an arbitrary, config-driven list of logical **assets** (identified by unique URL-safe `asset_id`, combining symbol and timeframe — e.g., `btc_15m`, `btc_1h`, `btc_4h`, `btc_1d`, `sp500_1h`, `nvda_1h`).
+- Each asset lives in its own modular JSON file under your local gitignored `configs/assets/` directory (referenced via `config_path` in `configs/bot.json`, with optional inline overrides such as `"enabled": false`) and independently configures:
   - Its market (`symbol`, `timeframe`, `market_schedule`: `"24/7"` enforces strict `interval_ms` contiguity in sliding windows, replay horizon checks, and consecutive alert streaks; `"sessions"` allows weekend/holiday timestamp gaps cleanly).
   - Its data provider preset (e.g., `binance_spot` for crypto, another REST preset for equities/indices, or `synthetic` for offline tests).
   - Its runtime mode, indicator list, feature window/normalization, Triple Barrier targets, dedicated/shared/disabled neural-network endpoints, optional `training` defaults, analysis thresholds, and alert rules.
-- Adding a new asset or timeframe requires **zero code changes**: add a JSON file in `configs/assets/` and register it in `configs/bot.json`.
+- Clean core / user-config decoupling: versioned starter templates live under `templates/configs/` (`bot.json`, `providers/binance_spot.json`, `providers/synthetic.json`, `assets/example_asset.json`, `assets/demo_synthetic.json`), while `configs/` is gitignored alongside `data/` and `models/`. On a fresh clone with no `configs/bot.json`, CLI apps auto-bootstrap minimal default files (0 assets configured, or use `./scripts/init_config.sh --with-demo` for an instant offline demo), and empty `"assets": []` boots cleanly without errors. Adding a new asset, provider API, or trained model requires **zero code changes** and **zero Git commits**.
 
 ### 3.2 Configurable Market Data Ingestion
 - Fetch historical and real-time OHLCV candles (`open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `is_closed`) from external exchanges, brokers, or web APIs configured entirely via JSON.
@@ -62,12 +62,12 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 
 ### 3.5 Feature Normalization, Dataset Export & `NeuralNetwork` v0.7.0 Integration
 - **Window-relative normalization:** Never feed raw non-stationary prices to the MLP. Every input window of $W$ candles (e.g., $W = 24$) is normalized relative to the anchor candle close $C_t$ and local volatility (`ATR` or percentage returns), with bounded indicator scaling.
-- **Sliding-window dataset generation:** Given $W$ input candles (indices `i .. i + W - 1`, e.g., `0..23` = 24 candles) and $H$ target candles (`i + W .. i + W + H - 1`, e.g., `24..29` = 6 candles for `btc_1h`/`btc_4h`, or `H = 7` for `btc_1d`), slide forward by configurable `stride` starting strictly after `max_warmup`.
+- **Sliding-window dataset generation:** Given $W$ input candles (indices `i .. i + W - 1`, e.g., `0..23` = 24 candles) and $H$ target candles (`i + W .. i + W + H - 1`, e.g., `24..29` = 6 candles in `templates/configs/assets/example_asset.json`), slide forward by configurable `stride` starting strictly after `max_warmup`.
 - **Per-asset modular multi-network architecture** aligned strictly with `libnn` v0.7.0 constraints (one loss + one output activation per `Network`):
   1. **Candle Predictor (`Huber` or `MSE` + `Linear`):** Input = $W$ normalized candles + indicators; Output = $H \times 4$ relative OHLC values used to reconstruct translucent predicted candles and projected TP/SL zones (`Huber` loss prevents extreme flash-wick outliers from distorting regression scales).
-  2. **Signal Classifier (`CCE` + `Softmax`, parallel, enabled by default on `btc_1h`/`btc_4h`/`btc_1d`):** Input = identical normalized feature vector; Output = 3 mutually exclusive probabilities `[HOLD, LONG, SHORT]` trained via Triple Barrier Labeling (`mode: "pct"` or volatility-adaptive `mode: "atr_multiple"`) over the next $H$ candles (leveraging `libnn`'s numerically stable fused `Softmax + CCE` backward path).
+  2. **Signal Classifier (`CCE` + `Softmax`, parallel, enabled in `templates/configs/assets/example_asset.json`):** Input = identical normalized feature vector; Output = 3 mutually exclusive probabilities `[HOLD, LONG, SHORT]` trained via Triple Barrier Labeling (`mode: "pct"` or volatility-adaptive `mode: "atr_multiple"`) over the next $H$ candles (leveraging `libnn`'s numerically stable fused `Softmax + CCE` backward path).
   3. **Extensible `extra_models` map:** Supports plugging additional specialized `server_app` models per asset via JSON; `PredictionEngine` and `ReplayEngine` query enabled extra models and expose their raw output vectors in `PredictionSnapshot.extra_outputs` and JSON API responses while `candle_predictor` and `signal_classifier` drive `TradeAnalysis`.
-  - Because each logical asset (`btc_1h`, `btc_4h`, `btc_1d`, `nvda_1h`) configures its own endpoints and optional `training` defaults independently, an asset can run dedicated trained models on its own ports, tune its own architecture/regularization, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., for charting-only assets).
+  - Because each logical asset (`btc_15m`, `btc_1h`, `btc_4h`, `btc_1d`, `nvda_1h`) configures its own endpoints and optional `training` defaults independently in your gitignored `configs/assets/` folder, an asset can run dedicated trained models on its own ports, tune its own architecture/regularization, share an ATR-normalized model port for experimentation, or disable NNs entirely (e.g., for charting-only assets).
 - **Exact `NeuralNetwork` v0.7.0 interoperability:**
   - Export `libnn`-compatible CSV files per asset (`input_cols + target_cols` numeric columns formatted with `%.9g`).
   - Auto-generate strictly valid `libnn` v0.7.0 `nn_config.json` files per asset/model from optional per-asset `training` defaults and CLI overrides: exact `input_size`/`output_size`, `Huber` (`huber_delta`) or `MSE`/`CCE`, `AdamW` decoupled `weight_decay`, deterministic hidden `dropout_rate`, `Cosine` LR schedule (`min_learning_rate`), global L2 `grad_clip_norm`, **`validation_shuffle: false`** chronological split, **`keep_best_validation_model: true`**, `early_stopping_patience` + `early_stopping_min_delta`, automatic `report_path` (from `export.report_dir`), pre-populated `server.host`/`server.port`, and configurable `export.{output_dir, dataset_path_prefix, model_save_dir, report_dir}` paths in `configs/bot.json` — zero unknown keys.
@@ -77,7 +77,7 @@ Core guiding principles (mirrored directly from `NeuralNetwork`):
 
 ### 3.6 Prediction Reconstruction, Trade Analysis & Alert Engine
 - Reconstruct absolute predicted OHLC candles from relative outputs while enforcing valid candle geometry (`high = max(h, l, o, c)`, `low = min(h, l, o, c)`).
-- Compute actionable trade analysis metrics (`TradeAnalysis`): supports configurable Softmax decision modes (`"argmax"` and `"directional_edge"` with `min_directional_prob` / `min_directional_ratio`, enabled by default on shipped BTC profiles), `tp_sl_source` (`"candles" | "triple_barrier"`), `require_candle_confirmation` (`bool` toggling dual-model cross-confirmation vs. signal-driven mode), recommended action (`HOLD`/`LONG`/`SHORT`), projected `expected_move_pct`, `estimated_tp`, `estimated_sl`, `risk_reward`, confidence (calibrated Softmax probability when Signal Classifier is active, or directional-consistency/R:R heuristic in candle-only mode), and human-readable reasoning.
+- Compute actionable trade analysis metrics (`TradeAnalysis`): supports configurable Softmax decision modes (`"argmax"` and `"directional_edge"` with `min_directional_prob` / `min_directional_ratio`, configured in `templates/configs/assets/example_asset.json`), `tp_sl_source` (`"candles" | "triple_barrier"`), `require_candle_confirmation` (`bool` toggling dual-model cross-confirmation vs. signal-driven mode), recommended action (`HOLD`/`LONG`/`SHORT`), projected `expected_move_pct`, `estimated_tp`, `estimated_sl`, `risk_reward`, confidence (calibrated Softmax probability when Signal Classifier is active, or directional-consistency/R:R heuristic in candle-only mode), and human-readable reasoning.
 - **Per-asset Alert Engine (`alerts` config section):**
   - Evaluates closed-candle analysis snapshots against configurable thresholds (`actions`, `min_confidence`, `min_risk_reward`, `min_expected_move_pct`).
   - **Persistence confirmation (`consecutive_candles`):** optionally requires $N$ consecutive closed candles (e.g. 2 or 3) matching the same action above threshold before emitting an alert, filtering single-bar noise.
@@ -149,27 +149,30 @@ TradingBot/
 │   ├── 04-indicators-features-and-datasets.md
 │   ├── 05-nn-client-analysis-and-alerts.md
 │   ├── 06-runtime-replay-and-webhooks.md
-│   └── 07-web-dashboard-and-api.md
+│   ├── 07-web-dashboard-and-api.md
+│   └── 08-configuration-and-templates.md
 ├── scripts/                             # Helper shell scripts
+│   ├── init_config.sh
 │   ├── test.sh
 │   ├── backfill.sh
 │   ├── export_dataset.sh
 │   ├── analyze_reports.sh
 │   ├── live.sh
 │   └── replay.sh
-├── configs/                             # External JSON configs (zero hardcoding)
-│   ├── bot.json                         # Root multi-asset configuration
-│   ├── assets/                          # Per-asset / per-timeframe profiles
-│   │   ├── btc_1h.json
-│   │   ├── btc_4h.json
-│   │   └── btc_1d.json
-│   └── providers/                       # Declarative exchange/synthetic presets
+├── templates/configs/                   # Versioned starter JSON templates (copied into gitignored configs/)
+│   ├── bot.json                         # Minimal root template (0 assets by default)
+│   ├── assets/
+│   │   ├── demo_synthetic.json          # Offline zero-dependency synthetic charting demo
+│   │   └── example_asset.json           # Full REST + dual-NN reference template
+│   └── providers/                       # Generic declarative exchange/synthetic presets
 │       ├── binance_spot.json
+│       ├── example_rest_objects.json    # Nested JSON object + env API-key REST blueprint
 │       └── synthetic.json
+├── configs/                             # Gitignored local user configs (auto-bootstrapped on first run)
 ├── src/tradingbot/                      # Reusable core library (zero external deps)
 │   ├── __init__.py
 │   ├── models.py                        # Timeframe (Monday-aligned 1w), Candle, TimeRange, predictions, AlertEvent
-│   ├── config.py                        # Strict multi-asset JSON loader & dynamic indicator validator
+│   ├── config.py                        # Strict multi-asset JSON loader, dynamic validator & default bootstrapper
 │   ├── storage/                         # CandleStore ABC, SQLiteCandleStore, GapDetector
 │   ├── providers/                       # GenericRestProvider, SyntheticProvider, SyncService (backfill/sync)
 │   ├── indicators/                      # Registry + SMA, EMA, RSI, ATR, BB, SqueezeMomentum, VolatilityRegime, HTFContext
@@ -180,6 +183,7 @@ TradingBot/
 │   ├── runtime/                         # Multi-asset BotOrchestrator (sync_live, live_only), ReplayEngine, EventBus, webhooks
 │   └── web/                             # Stdlib ThreadingHTTPServer + RFC 6455 WebSockets + Alerts API + HiDPI Canvas UI
 ├── apps/                                # Thin CLI entrypoints
+│   ├── init_config_app.py
 │   ├── backfill_app.py
 │   ├── export_dataset_app.py
 │   ├── analyze_reports_app.py
@@ -211,3 +215,4 @@ TradingBot/
 | **`v0.8.0`** | Completed | Full `NeuralNetwork` (`libnn` `v0.7.0`) integration: optional per-asset `training` defaults (`Huber`/`MSE`, `AdamW` decoupled `weight_decay`, deterministic `dropout_rate`, `Cosine` LR schedule, global L2 `grad_clip_norm`, early stopping), root `export.report_dir`, CLI hyperparameter overrides, calibrated `btc_1h`/`btc_4h`/`btc_1d` training profiles, and zero-dependency JSON training report analyzer/comparator (`report_analyzer.py`, `apps/analyze_reports_app.py`, `scripts/analyze_reports.sh`). | Strict `libnn` v0.7.0 schema & value validation, hidden-activation/early-stop/LR-clamp guards, diverged/nullable/overfitting report diagnostics, directory-scan CLI tests, and full `84/84` test suite (`./scripts/test.sh` + `node --check`). |
 | **`v0.9.0`** | Completed | Added `directional_edge` Softmax decision mode (`min_directional_prob`, `min_directional_ratio`) in `TradeAnalyzer` (plus Signal-Only `min_expected_move_pct` symmetry and accurate `argmax=HOLD` reason messages), actionable filtered-signal & conservative Triple-Barrier (`TP/SL/TO`, `win_rate`, `avg_ret`) backtest evaluation in `ReplayEngine` / `replay_app.py`, and recalibrated BTC training/analysis/alert profiles. | Deterministic `directional_edge` boundary & confidence-preservation tests, Triple-Barrier TP/whipsaw-SL/timeout/24-7-gap replay tests, `filtered_signals=0`/`win_rate=N/A` CLI tests, and full `87/87` test suite (`./scripts/test.sh` + `node --check`). |
 | **`v0.10.0`** | Completed | Added causal `VolatilityRegime` (`volatility_regime`) and higher-timeframe `HTFContext` (`htf_context`, including Monday-aligned `1d -> 1w`) indicators (expanding BTC features to `16/bar = 384`), `tp_sl_source` (`candles` \| `triple_barrier`) and signal-driven `require_candle_confirmation` in `TradeAnalyzer` (with `min_expected_move_pct` parity), `hold_funnel` (`hold_reasons`) and `--signal-only` in `ReplayEngine`/`replay_app.py`, exact `IndicatorEngine`-based warmup sizing in `SyncService`, `htf_context` `base_timeframe` config validation, crosshair filtering of `plot: "none"` indicators, and recalibrated BTC profiles. | Causal equivalence tests (`VolatilityRegime`, `HTFContext` `1h->4h` and Monday `1d->1w`, flat zero-range & empty inputs), `SyncService` warmup sizing & `htf_context` mismatch tests, signal-driven low-vol/R:R & candle-only `triple_barrier` tests, `replay --signal-only` error path, and full `91/91` test suite (`./scripts/test.sh` + `node --check`). |
+| **`v1.0.0`** | Completed | Stable self-contained core architecture: decoupled local user configs (`/configs/` and `/reports/` gitignored) from versioned starter templates (`templates/configs/` including 0-asset `bot.json`, `binance_spot`, `example_rest_objects`, `synthetic`, `example_asset`, and offline `demo_synthetic`), added empty `"assets": []` support across config/runtime/CLI/Web Dashboard, automatic minimal config bootstrap on first run, `./scripts/init_config.sh` (`--with-demo` preserving existing `bot.json`, `--copy-example`, `--force`), and complete configuration guide (`docs/08-configuration-and-templates.md`). | Strict schema validation of all `templates/configs/` files, empty-assets & auto-bootstrap/fallback tests, `--with-demo` on existing `bot.json` regression test, clean-clone (zero `configs/`) verification, and full `95/95` test suite (`./scripts/test.sh` + `node --check`). |

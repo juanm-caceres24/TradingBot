@@ -1,0 +1,42 @@
+{
+  "name": "example_rest_objects",
+  "type": "generic_rest",
+  "base_url": "https://api.example-broker.com",
+  "endpoint": "/v1/market/candles",
+  "http_method": "GET",
+  "timeout_sec": 10.0,
+  "rate_limit_ms": 250,
+  "max_candles_per_request": 500,
+  "params_map": {
+    "symbol": "ticker",
+    "interval": "resolution",
+    "start_time": "from",
+    "end_time": "to",
+    "limit": "count"
+  },
+  "interval_map": {
+    "15m": "15",
+    "1h": "60",
+    "4h": "240",
+    "1d": "D"
+  },
+  "response_mapping": {
+    "data_path": "data.candles",
+    "format": "array_of_objects",
+    "fields": {
+      "open_time": "timestamp",
+      "open": "open",
+      "high": "high",
+      "low": "low",
+      "close": "close",
+      "volume": "volume"
+    },
+    "timestamp_unit": "s",
+    "order": "desc"
+  },
+  "headers": {
+    "Accept": "application/json"
+  },
+  "api_key_env": "EXAMPLE_BROKER_API_KEY",
+  "api_key_header": "X-API-Key"
+}
