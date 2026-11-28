@@ -84,6 +84,6 @@ git push origin main --tags
 ---
 
 ## 4. Repository Hygiene Rules
-- Never commit `.venv/`, `__pycache__/`, `data/`, SQLite `.db` files, exported `.csv` datasets, trained models, or `.env` secrets (enforced by `.gitignore`).
-- Keep small example configs and provider presets versioned in `configs/`.
+- Never commit `.venv/`, `__pycache__/`, `/configs/`, `data/`, `models/`, `/reports/`, `logs/`, SQLite `.db` files, exported `.csv` datasets, or `.env` secrets (enforced by `.gitignore`).
+- Keep minimal, generic starter templates and provider blueprints versioned in `templates/configs/`; live instance configs and trained-model profiles live strictly in gitignored `/configs/`.
 - Update relevant files in `docs/` and unit tests in `tests/` inside the same feature branch as the code they document/verify.
